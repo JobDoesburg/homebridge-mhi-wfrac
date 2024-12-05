@@ -65,4 +65,4 @@ This project is licensed under the Apache-2.0 License. See the [LICENSE](LICENSE
 
 ## Acknowledgements
 
-This plugin was developed taking inspiration from the https://github.com/edwinvdpol/com.mhi.wfrac Homey app by Edwin van der Pol.
+This plugin was developed taking inspiration from the https://github.com/edwinvdpol/com.mhi.wfrac Homey app by Edwin van de Pol.
