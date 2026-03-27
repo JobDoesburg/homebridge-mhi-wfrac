@@ -562,8 +562,11 @@ export class DeviceClient {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  private getBaseUrl(protocol: 'http' | 'https'): string {
-    return `${protocol}://${this.ipAddress}:${this.port}/beaver/command`;
+  private getBaseUrl(protocol: 'http' | 'https', command?: string): string {
+    // WF-RAC-HTTPS firmware requires the command in the URL path
+    // WF-RAC (HTTP) firmware uses just /beaver/command
+    const basePath = `${protocol}://${this.ipAddress}:${this.port}/beaver/command`;
+    return (protocol === 'https' && command) ? `${basePath}/${command}` : basePath;
   }
 
   private getAxiosConfig(useHttps: boolean) {
@@ -576,10 +579,10 @@ export class DeviceClient {
     };
   }
 
-  private async detectProtocol(body: string): Promise<DeviceStatusResponse> {
+  private async detectProtocol(body: string, command: string): Promise<DeviceStatusResponse> {
     // Try HTTPS first (newer WF-RAC-HTTPS firmware), then fall back to HTTP
     try {
-      const response = await axios.post(this.getBaseUrl('https'), body, this.getAxiosConfig(true));
+      const response = await axios.post(this.getBaseUrl('https', command), body, this.getAxiosConfig(true));
       if (response.status === 200) {
         this.useHttps = true;
         this.log.info(`Device ${this.deviceId} (${this.ipAddress}): using HTTPS`);
@@ -627,10 +630,10 @@ export class DeviceClient {
 
     // Auto-detect protocol on first call
     if (this.useHttps === null) {
-      return await this.detectProtocol(body);
+      return await this.detectProtocol(body, command);
     }
 
-    const url = this.getBaseUrl(this.useHttps ? 'https' : 'http');
+    const url = this.getBaseUrl(this.useHttps ? 'https' : 'http', command);
 
     let lastError: Error | null = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
