@@ -474,6 +474,13 @@ export class DeviceClient {
   private commandQueue: Promise<void> = Promise.resolve();
   public isCommandInProgress = false;
 
+  private protocol: 'http' | 'https' = 'http';
+  private lastRequestTime: number = 0;
+  private readonly MIN_REQUEST_INTERVAL_MS = 1000; // 1 second minimum between requests
+  private pendingStatusUpdate: DeviceStatus | null = null;
+  private consolidationTimer: NodeJS.Timeout | null = null;
+  private readonly CONSOLIDATION_DELAY_MS = 500;
+
   constructor(ipAddress: string, port: number, operatorId: string, deviceId: string, log: Logging, ignoreConnectionErrors: boolean = true) {
     this.ipAddress = ipAddress;
     this.port = port;
@@ -526,37 +533,92 @@ export class DeviceClient {
     return await this.setDeviceStatus(this.status);
   }
 
+  async setEntrust(entrust: boolean): Promise<DeviceStatus> {
+    this.status.entrust = entrust;
+    return await this.setDeviceStatus(this.status);
+  }
+
+  async setWindDirectionUD(direction: number): Promise<DeviceStatus> {
+    this.status.windDirectionUD = direction;
+    return await this.setDeviceStatus(this.status);
+  }
+
+  async setWindDirectionLR(direction: number): Promise<DeviceStatus> {
+    this.status.windDirectionLR = direction;
+    return await this.setDeviceStatus(this.status);
+  }
+
+  async setSelfClean(selfClean: boolean): Promise<DeviceStatus> {
+    this.status.isSelfCleanOperation = selfClean;
+    return await this.setDeviceStatus(this.status);
+  }
+
   async setDeviceStatus(status: DeviceStatus): Promise<DeviceStatus> {
-    // Queue commands to prevent race conditions
-    this.isCommandInProgress = true;
+    // Store the pending status update
+    this.pendingStatusUpdate = status;
 
-    try {
-      this.commandQueue = this.commandQueue.then(async () => {
-        const contents = {
-          airconId: this.deviceId,
-          airconStat: status.toBase64(),
-        };
-        const data = await this.call('setAirconStat', contents);
-        this.status = DeviceStatus.fromBase64(data.contents.airconStat);
-      });
-
-      await this.commandQueue;
-      return this.status;
-    } catch (error) {
-      if (!this.ignoreConnectionErrors || !this.isConnectionError(error as Error)) {
-        this.log.error(`Error setting device status for ${this.deviceId} (${this.ipAddress}): ${error}`);
-      }
-      throw error;
-    } finally {
-      this.isCommandInProgress = false;
+    // Clear any existing consolidation timer
+    if (this.consolidationTimer) {
+      clearTimeout(this.consolidationTimer);
     }
+
+    // Return a promise that will resolve after consolidation
+    return new Promise((resolve, reject) => {
+      this.consolidationTimer = setTimeout(async () => {
+        // Execute the consolidated update
+        if (!this.pendingStatusUpdate) {
+          resolve(this.status);
+          return;
+        }
+
+        const statusToSend = this.pendingStatusUpdate;
+        this.pendingStatusUpdate = null;
+        this.isCommandInProgress = true;
+
+        try {
+          this.commandQueue = this.commandQueue.then(async () => {
+            const contents = {
+              airconId: this.deviceId,
+              airconStat: statusToSend.toBase64(),
+            };
+            const data = await this.call('setAirconStat', contents);
+            this.status = DeviceStatus.fromBase64(data.contents.airconStat);
+          });
+
+          await this.commandQueue;
+          resolve(this.status);
+        } catch (error) {
+          if (!this.ignoreConnectionErrors || !this.isConnectionError(error as Error)) {
+            this.log.error(`Error setting device status for ${this.deviceId} (${this.ipAddress}): ${error}`);
+          }
+          reject(error);
+        } finally {
+          this.isCommandInProgress = false;
+        }
+      }, this.CONSOLIDATION_DELAY_MS);
+    });
   }
 
   private async sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
+  private async enforceRequestThrottle(): Promise<void> {
+    const now = Date.now();
+    const timeSinceLastRequest = now - this.lastRequestTime;
+    const waitTime = this.MIN_REQUEST_INTERVAL_MS - timeSinceLastRequest;
+
+    if (waitTime > 0) {
+      await this.sleep(waitTime);
+    }
+
+    this.lastRequestTime = Date.now();
+  }
+
   async call(command: string, contents: DeviceStatusRequest|null = null, retries = 3): Promise<DeviceStatusResponse> {
+    // Enforce request throttling to prevent overwhelming the device
+    await this.enforceRequestThrottle();
+
     let data;
     if (contents) {
       data = {
@@ -581,20 +643,41 @@ export class DeviceClient {
     let lastError: Error | null = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
+        // Try current protocol (HTTP first, then HTTPS if it fails)
+        const url = `${this.protocol}://${this.ipAddress}:${this.port}/beaver/command/${command}`;
+
         // We must use axios, because fetch lowercases the headers, which the device does not like
-        const response = await axios.post(`http://${this.ipAddress}:${this.port}/beaver/command`, body, {
-          timeout: 10000, // 10 second timeout
+        const response = await axios.post(url, body, {
+          timeout: 30000, // 30 second timeout (matching Home Assistant)
           headers: {
             'Content-Type': 'application/json',
           },
+          // Disable SSL verification for self-signed certificates
+          httpsAgent: this.protocol === 'https' ? new (await import('https')).Agent({
+            rejectUnauthorized: false,
+          }) : undefined,
         });
 
         if (response.status !== 200) {
           throw new Error(`HTTP error: ${response.status} ${response.statusText}`);
         }
+
         return response.data;
       } catch (error) {
         lastError = error as Error;
+
+        // If HTTP fails on first attempt, try HTTPS
+        if (this.protocol === 'http' && attempt === 0) {
+          this.log.info(`HTTP failed for ${this.deviceId}, trying HTTPS...`);
+          this.protocol = 'https';
+          continue;
+        }
+
+        // If HTTPS also fails, fall back to HTTP for next time
+        if (this.protocol === 'https' && attempt === 1) {
+          this.log.warn(`HTTPS also failed for ${this.deviceId}, falling back to HTTP`);
+          this.protocol = 'http';
+        }
 
         // If this is a connection error and we have retries left, wait and retry
         if (this.isConnectionError(lastError) && attempt < retries) {
