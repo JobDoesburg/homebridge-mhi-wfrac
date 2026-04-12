@@ -31,20 +31,24 @@
           "type": "object",
           "properties": {
             "name": {
+              "title": "Name",
               "type": "string",
-              "required": false
+              "required": true,
+              "description": "A friendly name for this device (e.g., 'Living Room AC')."
             },
             "mac": {
               "type": "string",
               "required": true,
-              "pattern": "^[a-f0-9]{12}",
+              "pattern": "^[a-fA-F0-9]{12}$",
               "title": "MAC Address (serial number)",
               "description": "The MAC address (serial number) of the device, without separating characters (so denote 12:34:56:78:90:ab as 1234567890ab)."
             },
             "ip": {
+              "title": "IP Address",
               "type": "string",
-              "required": false,
-              "format": "ipv4"
+              "required": true,
+              "format": "ipv4",
+              "description": "The IP address of the device on your local network."
             }
           }
         }

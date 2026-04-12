@@ -57,6 +57,7 @@ export class HomebridgeMHIWFRACPlatform implements DynamicPlatformPlugin {
       if (existingAccessory) {
         // Accessory exists, restore from cache
         this.log.info('Restoring existing accessory from cache:', existingAccessory.displayName);
+        existingAccessory.context.device.mac = device.mac;
         new WFRACAccessory(this, existingAccessory, device.ip);
       } else {
         // Accessory does not exist, create a new one
@@ -66,6 +67,7 @@ export class HomebridgeMHIWFRACPlatform implements DynamicPlatformPlugin {
         // Store device details in accessory.context
         accessory.context.device = {
           name: device.name,
+          mac: device.mac,
           uniqueId: uuid,
         };
 

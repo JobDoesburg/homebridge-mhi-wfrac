@@ -562,11 +562,9 @@ export class DeviceClient {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  private getBaseUrl(protocol: 'http' | 'https', command?: string): string {
-    // WF-RAC-HTTPS firmware requires the command in the URL path
-    // WF-RAC (HTTP) firmware uses just /beaver/command
-    const basePath = `${protocol}://${this.ipAddress}:${this.port}/beaver/command`;
-    return (protocol === 'https' && command) ? `${basePath}/${command}` : basePath;
+  private getBaseUrl(protocol: 'http' | 'https', command: string): string {
+    // Both HTTP and HTTPS firmware require the command in the URL path
+    return `${protocol}://${this.ipAddress}:${this.port}/beaver/command/${command}`;
   }
 
   private getAxiosConfig(useHttps: boolean) {
@@ -593,7 +591,7 @@ export class DeviceClient {
     }
 
     try {
-      const response = await axios.post(this.getBaseUrl('http'), body, this.getAxiosConfig(false));
+      const response = await axios.post(this.getBaseUrl('http', command), body, this.getAxiosConfig(false));
       if (response.status === 200) {
         this.useHttps = false;
         this.log.info(`Device ${this.deviceId} (${this.ipAddress}): using HTTP`);

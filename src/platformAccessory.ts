@@ -7,6 +7,7 @@ export class WFRACAccessory {
   static REFRESH_INTERVAL = 10000;
 
   private readonly deviceName: string;
+  private readonly deviceMac: string;
   private readonly ipAddress: string;
   private readonly port = 51443;
   private readonly operatorId : string;
@@ -24,6 +25,7 @@ export class WFRACAccessory {
     ip: string,
   ) {
     this.deviceName = accessory.context.device.name;
+    this.deviceMac = accessory.context.device.mac;
     this.ipAddress = ip;
     this.operatorId = this.platform.config.operatorId;
     // this.platform.api.hap.uuid.generate('HomebridgeMHIWFRAC').toString().toUpperCase()";
@@ -33,7 +35,7 @@ export class WFRACAccessory {
       this.ipAddress,
       this.port,
       this.operatorId,
-      this.deviceName,
+      this.deviceMac,
       this.platform.log,
       this.platform.config.ignoreConnectionErrors,
     );
