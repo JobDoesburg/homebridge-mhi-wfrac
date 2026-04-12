@@ -49,6 +49,13 @@
               "required": true,
               "format": "ipv4",
               "description": "The IP address of the device on your local network."
+            },
+            "hideDehumidifier": {
+              "title": "Hide Dehumidifier",
+              "type": "boolean",
+              "required": false,
+              "default": false,
+              "description": "Hide the dehumidifier accessory if your AC unit doesn't support dry mode."
             }
           }
         }

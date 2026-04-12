@@ -16,7 +16,7 @@ export class WFRACAccessory {
 
   private thermostatService: Service;
   private fanService: Service;
-  private dehumidifierService: Service;
+  private dehumidifierService: Service | null = null;
   private refreshTimeout: NodeJS.Timeout | null = null;
 
   constructor(
@@ -50,9 +50,21 @@ export class WFRACAccessory {
       || this.accessory.addService(this.platform.Service.Thermostat);
     this.fanService = this.accessory.getService(this.platform.Service.Fanv2)
       || this.accessory.addService(this.platform.Service.Fanv2);
-    // TODO maybe this should be AirPurifier so we have an extra button for the fan (to switch to manual mode)
-    this.dehumidifierService = this.accessory.getService(this.platform.Service.HumidifierDehumidifier)
-      || this.accessory.addService(this.platform.Service.HumidifierDehumidifier);
+
+    // Conditionally create/remove dehumidifier service
+    const hideDehumidifier = this.accessory.context.device.hideDehumidifier || false;
+    if (hideDehumidifier) {
+      // Remove dehumidifier service if it exists
+      const existingDehumidifierService = this.accessory.getService(this.platform.Service.HumidifierDehumidifier);
+      if (existingDehumidifierService) {
+        this.accessory.removeService(existingDehumidifierService);
+      }
+      this.dehumidifierService = null;
+    } else {
+      // Create or get dehumidifier service
+      this.dehumidifierService = this.accessory.getService(this.platform.Service.HumidifierDehumidifier)
+        || this.accessory.addService(this.platform.Service.HumidifierDehumidifier);
+    }
 
     this.thermostatService.getCharacteristic(this.platform.Characteristic.TemperatureDisplayUnits)
       .onGet(() => this.platform.Characteristic.TemperatureDisplayUnits.CELSIUS);
@@ -63,13 +75,15 @@ export class WFRACAccessory {
 
     this.fanService.getCharacteristic(this.platform.Characteristic.RotationSpeed).setProps({minValue: 0, maxValue: 100, minStep: 25});
 
-    this.dehumidifierService.getCharacteristic(this.platform.Characteristic.TargetHumidifierDehumidifierState)
-      .setProps({validValues: [this.platform.Characteristic.TargetHumidifierDehumidifierState.DEHUMIDIFIER]});
-    this.dehumidifierService.getCharacteristic(this.platform.Characteristic.CurrentHumidifierDehumidifierState)
-      .setProps({validValues: [
-        this.platform.Characteristic.CurrentHumidifierDehumidifierState.INACTIVE,
-        this.platform.Characteristic.CurrentHumidifierDehumidifierState.DEHUMIDIFYING,
-      ]});
+    if (this.dehumidifierService) {
+      this.dehumidifierService.getCharacteristic(this.platform.Characteristic.TargetHumidifierDehumidifierState)
+        .setProps({validValues: [this.platform.Characteristic.TargetHumidifierDehumidifierState.DEHUMIDIFIER]});
+      this.dehumidifierService.getCharacteristic(this.platform.Characteristic.CurrentHumidifierDehumidifierState)
+        .setProps({validValues: [
+          this.platform.Characteristic.CurrentHumidifierDehumidifierState.INACTIVE,
+          this.platform.Characteristic.CurrentHumidifierDehumidifierState.DEHUMIDIFYING,
+        ]});
+    }
 
     this.thermostatService.getCharacteristic(this.platform.Characteristic.TargetHeatingCoolingState)
       .onSet(this.setTargetHeatingCoolingState.bind(this));
@@ -81,8 +95,11 @@ export class WFRACAccessory {
       .onSet(this.setTargetFanState.bind(this));
     this.fanService.getCharacteristic(this.platform.Characteristic.RotationSpeed)
       .onSet(this.setRotationSpeed.bind(this));
-    this.dehumidifierService.getCharacteristic(this.platform.Characteristic.Active)
-      .onSet(this.setHumidifierActive.bind(this));
+
+    if (this.dehumidifierService) {
+      this.dehumidifierService.getCharacteristic(this.platform.Characteristic.Active)
+        .onSet(this.setHumidifierActive.bind(this));
+    }
 
     // We do not implement the target humidifier state, since we only accept DEHUMIDIFIER as a valid value.
 
@@ -191,13 +208,15 @@ export class WFRACAccessory {
     this.fanService.updateCharacteristic(this.platform.Characteristic.RotationSpeed, fanSpeed);
     this.fanService.updateCharacteristic(this.platform.Characteristic.TargetFanState, targetFanState);
 
-    this.dehumidifierService.updateCharacteristic(this.platform.Characteristic.Active, currentDehumidifierActive);
-    this.dehumidifierService.updateCharacteristic(
-      this.platform.Characteristic.CurrentHumidifierDehumidifierState, currentHumidifierDehumidifierState,
-    );
-    this.dehumidifierService.updateCharacteristic(
-      this.platform.Characteristic.TargetHumidifierDehumidifierState, targetHumidifierDehumidifierState,
-    );
+    if (this.dehumidifierService) {
+      this.dehumidifierService.updateCharacteristic(this.platform.Characteristic.Active, currentDehumidifierActive);
+      this.dehumidifierService.updateCharacteristic(
+        this.platform.Characteristic.CurrentHumidifierDehumidifierState, currentHumidifierDehumidifierState,
+      );
+      this.dehumidifierService.updateCharacteristic(
+        this.platform.Characteristic.TargetHumidifierDehumidifierState, targetHumidifierDehumidifierState,
+      );
+    }
   }
 
   async setTargetHeatingCoolingState(value: CharacteristicValue) {
