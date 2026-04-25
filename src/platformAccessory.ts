@@ -61,10 +61,17 @@ export class WFRACAccessory {
     this.fanService = this.accessory.getService(this.platform.Service.Fanv2)
       || this.accessory.addService(this.platform.Service.Fanv2);
 
-    // Remove leftover Switch service from older "away mode" feature
-    const leftoverSwitchService = this.accessory.getService(this.platform.Service.Switch);
-    if (leftoverSwitchService) {
-      this.accessory.removeService(leftoverSwitchService);
+    // Remove leftover services from older versions (away mode, 3D auto swing, self-clean, etc.).
+    // The accessory may have multiple services of the same type with different subtypes,
+    // so we iterate the full service list rather than relying on getService().
+    const obsoleteServiceUuids = new Set<string>([
+      this.platform.Service.Switch.UUID,
+      this.platform.Service.FilterMaintenance.UUID,
+    ]);
+    for (const service of [...this.accessory.services]) {
+      if (obsoleteServiceUuids.has(service.UUID)) {
+        this.accessory.removeService(service);
+      }
     }
 
     // Conditionally create/remove dehumidifier service

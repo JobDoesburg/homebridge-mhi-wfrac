@@ -1,7 +1,7 @@
 {
   "displayName": "Homebridge MHI WF-RAC",
   "name": "homebridge-mhi-wfrac",
-  "version": "2.5.0",
+  "version": "2.5.1",
   "description": "A homebridge plugin for Mitshubishi WF-RAC aircos (using the Smart M-Air app)",
   "license": "Apache-2.0",
   "type": "module",
