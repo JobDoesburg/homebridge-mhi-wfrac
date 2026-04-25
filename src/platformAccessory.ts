@@ -20,25 +20,32 @@ export class WFRACAccessory {
   private dehumidifierService: Service | null = null;
   private refreshTimeout: NodeJS.Timeout | null = null;
 
+  private readonly selfManaged: boolean;
+
   constructor(
     private readonly platform: HomebridgeMHIWFRACPlatform,
     private readonly accessory: PlatformAccessory,
     ip: string,
+    operatorId: string,
+    selfManaged: boolean,
   ) {
     this.deviceName = accessory.context.device.name;
     this.deviceMac = accessory.context.device.mac;
     this.deviceId = accessory.context.device.deviceId || accessory.context.device.mac;
     this.ipAddress = ip;
-    this.operatorId = this.platform.config.operatorId;
-    // this.platform.api.hap.uuid.generate('HomebridgeMHIWFRAC').toString().toUpperCase()";
-    // TODO: we should create a new operatorId for the platform and register it to the device.
+    this.operatorId = operatorId;
+    this.selfManaged = selfManaged;
+
+    accessory.context.device.ip = ip;
+
+    const airconId = (accessory.context.device.airconId as string | undefined) || this.deviceMac;
 
     this.device = new DeviceClient(
       this.ipAddress,
       this.port,
       this.operatorId,
       this.deviceId,
-      this.deviceMac,
+      airconId,
       this.platform.log,
       this.platform.config.ignoreConnectionErrors,
     );
@@ -116,6 +123,35 @@ export class WFRACAccessory {
 
   }
 
+  private async ensureRegistered(): Promise<void> {
+    if (!this.selfManaged || this.accessory.context.registered) {
+      return;
+    }
+    try {
+      const tz = process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+      const result = await this.device.updateAccountInfo(tz);
+      if (result === 2) {
+        this.platform.log.error(
+          `${this.deviceName}: device has reached the 4-account limit. ` +
+          'Remove an unused remote in the Smart M-Air app, then restart Homebridge.',
+        );
+        return;
+      }
+      if (result !== 0) {
+        this.platform.log.warn(`${this.deviceName}: updateAccountInfo returned result=${result}`);
+        return;
+      }
+      this.accessory.context.registered = true;
+      this.platform.log.info(`${this.deviceName}: registered (operatorId=${this.operatorId})`);
+    } catch (error) {
+      if (this.platform.config.ignoreConnectionErrors && this.device.isConnectionError(error as Error)) {
+        this.platform.log.debug(`${this.deviceName}: registration deferred (${(error as Error).message})`);
+        return;
+      }
+      this.platform.log.warn(`${this.deviceName}: registration failed: ${(error as Error).message}`);
+    }
+  }
+
   private handleSetError(action: string, error: unknown) {
     const err = error as Error;
     if (this.platform.config.ignoreConnectionErrors && this.device.isConnectionError(err)) {
@@ -132,6 +168,7 @@ export class WFRACAccessory {
       this.refreshTimeout = null;
     }
     try {
+      await this.ensureRegistered();
       await fn();
       this.updateStatus();
     } catch (error) {
@@ -148,13 +185,14 @@ export class WFRACAccessory {
 
     // Skip status refresh if a command is in progress to avoid race conditions
     if (!this.device.isCommandInProgress) {
-      this.device.getDeviceStatus().then( () => {
-        this.updateStatus();
-      }).catch((error) => {
-        if (!this.platform.config.ignoreConnectionErrors || !this.device.isConnectionError(error)) {
-          this.platform.log.error(`Error getting status for ${this.deviceName}: ${error}`);
-        }
-      });
+      this.ensureRegistered()
+        .then(() => this.device.getDeviceStatus())
+        .then(() => this.updateStatus())
+        .catch((error) => {
+          if (!this.platform.config.ignoreConnectionErrors || !this.device.isConnectionError(error)) {
+            this.platform.log.error(`Error getting status for ${this.deviceName}: ${error}`);
+          }
+        });
     }
 
     this.refreshTimeout = setTimeout(() => this.refreshStatus(), WFRACAccessory.REFRESH_INTERVAL);

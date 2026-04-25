@@ -426,39 +426,23 @@ export class DeviceStatus {
   }
 }
 
-interface DeviceStatusRequest {
-  airconId: string;
-  airconStat?: string;
-}
+type RequestContents = Record<string, unknown>;
 
-interface DeviceStatusResponse {
+interface DeviceResponse {
   command: string;
   apiVer: string;
   operatorId: string;
   deviceId: string;
   timestamp: number;
   result: number;
-  contents: {
-    airconId: string;
-    airconStat: string;
-    logStat: number;
-    updatedBy: string;
-    expires: number;
-    ledStat: number;
-    autoHeating: number;
-    highTemp: string;
-    lowTemp: string;
-    firmType: string;
-    wireless: {
-      firmVer: string;
-    };
-    mcu: {
-      firmVer: string;
-    };
-    timezone: string;
-    remoteList: string[];
-    numOfAccount: number;
-  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  contents: any;
+}
+
+interface DeviceInfoContents {
+  airconId: string;
+  macAddress: string;
+  apMode: number;
 }
 
 export class DeviceClient {
@@ -533,6 +517,38 @@ export class DeviceClient {
       } finally {
         this.isCommandInProgress = false;
       }
+    });
+  }
+
+  async getDeviceInfo(): Promise<DeviceInfoContents> {
+    return this.enqueue(async () => {
+      const data = await this.call('getDeviceInfo');
+      if (data.result !== 0 || !data.contents?.airconId) {
+        throw new Error(`getDeviceInfo failed for ${this.deviceId} (${this.ipAddress}): ${JSON.stringify(data)}`);
+      }
+      return data.contents as DeviceInfoContents;
+    });
+  }
+
+  async updateAccountInfo(timezone: string): Promise<number> {
+    return this.enqueue(async () => {
+      const data = await this.call('updateAccountInfo', {
+        accountId: this.operatorId,
+        airconId: this.airconId,
+        remote: 0,
+        timezone,
+      });
+      return data.result;
+    });
+  }
+
+  async deleteAccountInfo(): Promise<number> {
+    return this.enqueue(async () => {
+      const data = await this.call('deleteAccountInfo', {
+        accountId: this.operatorId,
+        airconId: this.airconId,
+      });
+      return data.result;
     });
   }
 
@@ -622,7 +638,7 @@ export class DeviceClient {
     };
   }
 
-  private async detectProtocol(body: string, command: string): Promise<DeviceStatusResponse> {
+  private async detectProtocol(body: string, command: string): Promise<DeviceResponse> {
     // Try HTTP first (legacy firmware), then fall back to HTTPS (WF-RAC-HTTPS firmware).
     // Matches the protocol-detection order used by the Home Assistant integration.
     try {
@@ -646,7 +662,7 @@ export class DeviceClient {
     throw new Error(`Unable to connect to device ${this.deviceId} (${this.ipAddress}) via HTTP or HTTPS`);
   }
 
-  async call(command: string, contents: DeviceStatusRequest|null = null, retries = 3): Promise<DeviceStatusResponse> {
+  async call(command: string, contents: RequestContents|null = null, retries = 3): Promise<DeviceResponse> {
     let data;
     if (contents) {
       data = {

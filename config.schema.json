@@ -12,11 +12,10 @@
         "default": "Homebridge MHI WF-RAC"
       },
       "operatorId": {
-        "title": "Operator ID (uuid)",
+        "title": "Operator ID (optional)",
         "type": "string",
-        "required": true,
-        "default": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-        "description": "The operator ID of the Smart M-Air app. See https://github.com/JobDoesburg/homebridge-mhi-wfrac for more information."
+        "required": false,
+        "description": "Leave blank to let the plugin self-register a new remote on each device (uses one of the device's 4 remote slots). Provide an operator ID (e.g. sniffed from the Smart M-Air app) to mirror an existing remote instead — no registration is performed in that case. See https://github.com/JobDoesburg/homebridge-mhi-wfrac for more information."
       },
       "ignoreConnectionErrors": {
         "title": "Ignore Connection Errors",
