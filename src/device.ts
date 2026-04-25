@@ -428,7 +428,7 @@ export class DeviceStatus {
 
 interface DeviceStatusRequest {
   airconId: string;
-  airconStat: string;
+  airconStat?: string;
 }
 
 interface DeviceStatusResponse {
@@ -462,11 +462,14 @@ interface DeviceStatusResponse {
 }
 
 export class DeviceClient {
+  private static readonly MIN_REQUEST_GAP_MS = 1000;
+
   private readonly ipAddress: string;
   private readonly port: number;
 
   private readonly operatorId: string;
   private readonly deviceId: string;
+  private readonly airconId: string;
 
   private readonly log: Logging;
   private readonly ignoreConnectionErrors: boolean;
@@ -474,22 +477,32 @@ export class DeviceClient {
   public status = new DeviceStatus();
   private commandQueue: Promise<void> = Promise.resolve();
   public isCommandInProgress = false;
+  private nextRequestAfter = 0;
 
   private useHttps: boolean | null = null; // null = not yet detected
   private readonly httpsAgent = new https.Agent({
     rejectUnauthorized: false, // WF-RAC devices use self-signed certificates
   });
 
-  constructor(ipAddress: string, port: number, operatorId: string, deviceId: string, log: Logging, ignoreConnectionErrors: boolean = true) {
+  constructor(
+    ipAddress: string,
+    port: number,
+    operatorId: string,
+    deviceId: string,
+    airconId: string,
+    log: Logging,
+    ignoreConnectionErrors: boolean = true,
+  ) {
     this.ipAddress = ipAddress;
     this.port = port;
     this.operatorId = operatorId;
     this.deviceId = deviceId;
+    this.airconId = airconId;
     this.log = log;
     this.ignoreConnectionErrors = ignoreConnectionErrors;
   }
 
-  private isConnectionError(error: Error): boolean {
+  public isConnectionError(error: Error): boolean {
     const errorMessage = error.message.toLowerCase();
     return errorMessage.includes('econnrefused') ||
            errorMessage.includes('econnreset') ||
@@ -501,10 +514,26 @@ export class DeviceClient {
            errorMessage.includes('etimedout');
   }
 
+  private enqueue<T>(task: () => Promise<T>): Promise<T> {
+    const next = this.commandQueue.then(task, task);
+    this.commandQueue = next.then(() => undefined, () => undefined);
+    return next;
+  }
+
   async getDeviceStatus(): Promise<DeviceStatus> {
-    await this.call('getAirconStat')
-      .then(data => this.status = DeviceStatus.fromBase64(data.contents.airconStat));
-    return this.status;
+    return this.enqueue(async () => {
+      this.isCommandInProgress = true;
+      try {
+        const data = await this.call('getAirconStat', { airconId: this.airconId });
+        if (data.result !== 0 || !data.contents?.airconStat) {
+          throw new Error(`Device ${this.deviceId} (${this.ipAddress}) returned an unexpected response: ${JSON.stringify(data)}`);
+        }
+        this.status = DeviceStatus.fromBase64(data.contents.airconStat);
+        return this.status;
+      } finally {
+        this.isCommandInProgress = false;
+      }
+    });
   }
 
   async setAirflow(airFlow: number): Promise<DeviceStatus> {
@@ -533,37 +562,51 @@ export class DeviceClient {
   }
 
   async setDeviceStatus(status: DeviceStatus): Promise<DeviceStatus> {
-    // Queue commands to prevent race conditions
-    this.isCommandInProgress = true;
-
-    try {
-      this.commandQueue = this.commandQueue.then(async () => {
+    return this.enqueue(async () => {
+      this.isCommandInProgress = true;
+      try {
         const contents = {
-          airconId: this.deviceId,
+          airconId: this.airconId,
           airconStat: status.toBase64(),
         };
         const data = await this.call('setAirconStat', contents);
+        if (data.result !== 0 || !data.contents?.airconStat) {
+          throw new Error(`Device ${this.deviceId} (${this.ipAddress}) returned an unexpected response: ${JSON.stringify(data)}`);
+        }
         this.status = DeviceStatus.fromBase64(data.contents.airconStat);
-      });
-
-      await this.commandQueue;
-      return this.status;
-    } catch (error) {
-      if (!this.ignoreConnectionErrors || !this.isConnectionError(error as Error)) {
-        this.log.error(`Error setting device status for ${this.deviceId} (${this.ipAddress}): ${error}`);
+        return this.status;
+      } catch (error) {
+        if (!this.ignoreConnectionErrors || !this.isConnectionError(error as Error)) {
+          this.log.error(`Error setting device status for ${this.deviceId} (${this.ipAddress}): ${error}`);
+        }
+        throw error;
+      } finally {
+        this.isCommandInProgress = false;
       }
-      throw error;
-    } finally {
-      this.isCommandInProgress = false;
-    }
+    });
   }
 
   private async sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
+  private async waitForNextRequestSlot(): Promise<void> {
+    const waitMs = this.nextRequestAfter - Date.now();
+    if (waitMs > 0) {
+      await this.sleep(waitMs);
+    }
+  }
+
+  private async sendRequest(url: string, body: string, useHttps: boolean) {
+    await this.waitForNextRequestSlot();
+    try {
+      return await axios.post(url, body, this.getAxiosConfig(useHttps));
+    } finally {
+      this.nextRequestAfter = Date.now() + DeviceClient.MIN_REQUEST_GAP_MS;
+    }
+  }
+
   private getBaseUrl(protocol: 'http' | 'https', command: string): string {
-    // Both HTTP and HTTPS firmware require the command in the URL path
     return `${protocol}://${this.ipAddress}:${this.port}/beaver/command/${command}`;
   }
 
@@ -571,37 +614,36 @@ export class DeviceClient {
     return {
       timeout: 10000, // 10 second timeout
       headers: {
-        'Content-Type': 'application/json',
+        'Content-Type': 'application/json; charset=utf-8',
+        'User-Agent': 'smartmair_app[1.4.005]',
+        'Accept': '*/*',
       },
       ...(useHttps ? { httpsAgent: this.httpsAgent } : {}),
     };
   }
 
   private async detectProtocol(body: string, command: string): Promise<DeviceStatusResponse> {
-    // Try HTTPS first (newer WF-RAC-HTTPS firmware), then fall back to HTTP
+    // Try HTTP first (legacy firmware), then fall back to HTTPS (WF-RAC-HTTPS firmware).
+    // Matches the protocol-detection order used by the Home Assistant integration.
     try {
-      const response = await axios.post(this.getBaseUrl('https', command), body, this.getAxiosConfig(true));
-      if (response.status === 200) {
-        this.useHttps = true;
-        this.log.info(`Device ${this.deviceId} (${this.ipAddress}): using HTTPS`);
-        return response.data;
-      }
-    } catch (httpsError) {
-      this.log.debug(`HTTPS failed for ${this.deviceId} (${this.ipAddress}), trying HTTP: ${(httpsError as Error).message}`);
-    }
-
-    try {
-      const response = await axios.post(this.getBaseUrl('http', command), body, this.getAxiosConfig(false));
-      if (response.status === 200) {
-        this.useHttps = false;
-        this.log.info(`Device ${this.deviceId} (${this.ipAddress}): using HTTP`);
-        return response.data;
-      }
+      const response = await this.sendRequest(this.getBaseUrl('http', command), body, false);
+      this.useHttps = false;
+      this.log.info(`Device ${this.deviceId} (${this.ipAddress}): using HTTP`);
+      return response.data;
     } catch (httpError) {
-      this.log.debug(`HTTP also failed for ${this.deviceId} (${this.ipAddress}): ${(httpError as Error).message}`);
+      this.log.debug(`HTTP failed for ${this.deviceId} (${this.ipAddress}), trying HTTPS: ${(httpError as Error).message}`);
     }
 
-    throw new Error(`Unable to connect to device ${this.deviceId} (${this.ipAddress}) via HTTPS or HTTP`);
+    try {
+      const response = await this.sendRequest(this.getBaseUrl('https', command), body, true);
+      this.useHttps = true;
+      this.log.info(`Device ${this.deviceId} (${this.ipAddress}): using HTTPS`);
+      return response.data;
+    } catch (httpsError) {
+      this.log.debug(`HTTPS also failed for ${this.deviceId} (${this.ipAddress}): ${(httpsError as Error).message}`);
+    }
+
+    throw new Error(`Unable to connect to device ${this.deviceId} (${this.ipAddress}) via HTTP or HTTPS`);
   }
 
   async call(command: string, contents: DeviceStatusRequest|null = null, retries = 3): Promise<DeviceStatusResponse> {
@@ -637,11 +679,7 @@ export class DeviceClient {
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
         // We must use axios, because fetch lowercases the headers, which the device does not like
-        const response = await axios.post(url, body, this.getAxiosConfig(this.useHttps));
-
-        if (response.status !== 200) {
-          throw new Error(`HTTP error: ${response.status} ${response.statusText}`);
-        }
+        const response = await this.sendRequest(url, body, this.useHttps);
         return response.data;
       } catch (error) {
         lastError = error as Error;

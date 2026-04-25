@@ -42,12 +42,17 @@ export class HomebridgeMHIWFRACPlatform implements DynamicPlatformPlugin {
 
     interface DeviceConfig {
       mac: string;
+      deviceId?: string;
       ip: string;
       name: string;
       hideDehumidifier?: boolean;
     }
 
-    const deviceConfigs:[DeviceConfig] = this.config.devices;
+    const deviceConfigs: DeviceConfig[] = this.config.devices ?? [];
+    if (deviceConfigs.length === 0) {
+      this.log.warn('No devices configured for HomebridgeMHIWFRACPlatform');
+      return;
+    }
 
     deviceConfigs.forEach((device) => {
       const uuid = this.api.hap.uuid.generate(device.mac);
@@ -59,6 +64,7 @@ export class HomebridgeMHIWFRACPlatform implements DynamicPlatformPlugin {
         // Accessory exists, restore from cache
         this.log.info('Restoring existing accessory from cache:', existingAccessory.displayName);
         existingAccessory.context.device.mac = device.mac;
+        existingAccessory.context.device.deviceId = device.deviceId || device.mac;
         existingAccessory.context.device.hideDehumidifier = device.hideDehumidifier || false;
         new WFRACAccessory(this, existingAccessory, device.ip);
       } else {
@@ -70,6 +76,7 @@ export class HomebridgeMHIWFRACPlatform implements DynamicPlatformPlugin {
         accessory.context.device = {
           name: device.name,
           mac: device.mac,
+          deviceId: device.deviceId || device.mac,
           uniqueId: uuid,
           hideDehumidifier: device.hideDehumidifier || false,
         };
