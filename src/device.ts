@@ -453,7 +453,10 @@ export class DeviceClient {
 
   private readonly operatorId: string;
   private readonly deviceId: string;
-  private readonly airconId: string;
+  // airconId may be refreshed after a getDeviceInfo call: some firmware returns
+  // an airconId that differs from the MAC, and updateAccountInfo must be called
+  // with the device-reported airconId or the registration silently misbehaves.
+  private airconId: string;
 
   private readonly log: Logging;
   private readonly ignoreConnectionErrors: boolean;
@@ -464,8 +467,14 @@ export class DeviceClient {
   private nextRequestAfter = 0;
 
   private useHttps: boolean | null = null; // null = not yet detected
+  // Newer WF-RAC firmware (HTTPS on 51443) needs TLS 1.2 with ALPN restricted to http/1.1.
+  // Without this Node 24's TLS defaults (TLS 1.3, h2 in ALPN) cause the handshake to fail or hang.
+  // The device also only accepts a single connection at a time, hence Connection: close.
   private readonly httpsAgent = new https.Agent({
-    rejectUnauthorized: false, // WF-RAC devices use self-signed certificates
+    rejectUnauthorized: false,
+    secureProtocol: 'TLSv1_2_method',
+    ALPNProtocols: ['http/1.1'],
+    keepAlive: false,
   });
 
   constructor(
@@ -526,8 +535,17 @@ export class DeviceClient {
       if (data.result !== 0 || !data.contents?.airconId) {
         throw new Error(`getDeviceInfo failed for ${this.deviceId} (${this.ipAddress}): ${JSON.stringify(data)}`);
       }
-      return data.contents as DeviceInfoContents;
+      const contents = data.contents as DeviceInfoContents;
+      if (contents.airconId && contents.airconId !== this.airconId) {
+        this.log.info(`Device ${this.deviceId} reported airconId=${contents.airconId} (was ${this.airconId})`);
+        this.airconId = contents.airconId;
+      }
+      return contents;
     });
+  }
+
+  getAirconId(): string {
+    return this.airconId;
   }
 
   async updateAccountInfo(timezone: string): Promise<number> {
@@ -538,6 +556,7 @@ export class DeviceClient {
         remote: 0,
         timezone,
       });
+      this.log.debug(`updateAccountInfo response for ${this.deviceId}: ${JSON.stringify(data)}`);
       return data.result;
     });
   }
@@ -633,33 +652,34 @@ export class DeviceClient {
         'Content-Type': 'application/json; charset=utf-8',
         'User-Agent': 'smartmair_app[1.4.005]',
         'Accept': '*/*',
+        'Connection': 'close',
       },
       ...(useHttps ? { httpsAgent: this.httpsAgent } : {}),
     };
   }
 
   private async detectProtocol(body: string, command: string): Promise<DeviceResponse> {
-    // Try HTTP first (legacy firmware), then fall back to HTTPS (WF-RAC-HTTPS firmware).
-    // Matches the protocol-detection order used by the Home Assistant integration.
-    try {
-      const response = await this.sendRequest(this.getBaseUrl('http', command), body, false);
-      this.useHttps = false;
-      this.log.info(`Device ${this.deviceId} (${this.ipAddress}): using HTTP`);
-      return response.data;
-    } catch (httpError) {
-      this.log.debug(`HTTP failed for ${this.deviceId} (${this.ipAddress}), trying HTTPS: ${(httpError as Error).message}`);
-    }
-
+    // Try HTTPS first: newer firmware is HTTPS-only on 51443, and the HTTP probe against
+    // an HTTPS port hangs until timeout, which delays every startup by the full request timeout.
     try {
       const response = await this.sendRequest(this.getBaseUrl('https', command), body, true);
       this.useHttps = true;
       this.log.info(`Device ${this.deviceId} (${this.ipAddress}): using HTTPS`);
       return response.data;
     } catch (httpsError) {
-      this.log.debug(`HTTPS also failed for ${this.deviceId} (${this.ipAddress}): ${(httpsError as Error).message}`);
+      this.log.debug(`HTTPS failed for ${this.deviceId} (${this.ipAddress}), trying HTTP: ${(httpsError as Error).message}`);
     }
 
-    throw new Error(`Unable to connect to device ${this.deviceId} (${this.ipAddress}) via HTTP or HTTPS`);
+    try {
+      const response = await this.sendRequest(this.getBaseUrl('http', command), body, false);
+      this.useHttps = false;
+      this.log.info(`Device ${this.deviceId} (${this.ipAddress}): using HTTP`);
+      return response.data;
+    } catch (httpError) {
+      this.log.debug(`HTTP also failed for ${this.deviceId} (${this.ipAddress}): ${(httpError as Error).message}`);
+    }
+
+    throw new Error(`Unable to connect to device ${this.deviceId} (${this.ipAddress}) via HTTPS or HTTP`);
   }
 
   async call(command: string, contents: RequestContents|null = null, retries = 3): Promise<DeviceResponse> {

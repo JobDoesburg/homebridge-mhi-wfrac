@@ -135,6 +135,16 @@ export class WFRACAccessory {
       return;
     }
     try {
+      // Mirror the Home Assistant flow: fetch the device-reported airconId first.
+      // Some firmware (notably the HTTPS variant) returns an airconId that differs
+      // from the MAC, and updateAccountInfo must be called with the device-reported
+      // value or registration silently fails.
+      if (!this.accessory.context.device.airconId) {
+        const info = await this.device.getDeviceInfo();
+        this.accessory.context.device.airconId = info.airconId;
+        this.platform.log.info(`${this.deviceName}: airconId=${info.airconId}`);
+      }
+
       const tz = process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
       const result = await this.device.updateAccountInfo(tz);
       if (result === 2) {
@@ -144,9 +154,12 @@ export class WFRACAccessory {
         );
         return;
       }
-      if (result !== 0) {
-        this.platform.log.warn(`${this.deviceName}: updateAccountInfo returned result=${result}`);
-        return;
+      // Match HA behaviour: treat any non-2 response as success. Some firmware
+      // versions return the result code as a string, omit it on success, or
+      // include extra fields. Being permissive here avoids spurious "registered=false"
+      // states that block all subsequent commands.
+      if (result !== 0 && result !== undefined) {
+        this.platform.log.warn(`${this.deviceName}: updateAccountInfo returned result=${result} — proceeding optimistically`);
       }
       this.accessory.context.registered = true;
       this.platform.log.info(`${this.deviceName}: registered (operatorId=${this.operatorId})`);
