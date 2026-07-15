@@ -2,9 +2,14 @@ import {Service, PlatformAccessory, CharacteristicValue} from 'homebridge';
 import {DeviceClient, DeviceStatus} from './device.js';
 import {HomebridgeMHIWFRACPlatform} from './platform.js';
 
+type DeviceStatusUpdate = Partial<Pick<
+  DeviceStatus,
+  'operation' | 'operationMode' | 'presetTemp' | 'airFlow' | 'entrust'
+>>;
 
 export class WFRACAccessory {
   static REFRESH_INTERVAL = 10000;
+  static UPDATE_CONSOLIDATION_MS = 500;
 
   private readonly deviceName: string;
   private readonly deviceMac: string;
@@ -15,10 +20,13 @@ export class WFRACAccessory {
 
   private device: DeviceClient;
 
-  private thermostatService: Service;
+  private heaterCoolerService: Service;
   private fanService: Service;
   private dehumidifierService: Service | null = null;
   private refreshTimeout: NodeJS.Timeout | null = null;
+  private updateConsolidationTimeout: NodeJS.Timeout | null = null;
+  private pendingStatusUpdate: DeviceStatusUpdate = {};
+  private pendingStatusWaiters: Array<{resolve: () => void; reject: (error: unknown) => void}> = [];
 
   private readonly selfManaged: boolean;
 
@@ -56,8 +64,9 @@ export class WFRACAccessory {
       .setCharacteristic(this.platform.Characteristic.Model, 'WF-RAC Smart M-Air Series')
       .setCharacteristic(this.platform.Characteristic.SerialNumber, this.deviceMac);
 
-    this.thermostatService = this.accessory.getService(this.platform.Service.Thermostat)
-      || this.accessory.addService(this.platform.Service.Thermostat);
+    this.heaterCoolerService = this.accessory.getService(this.platform.Service.HeaterCooler)
+      || this.accessory.addService(this.platform.Service.HeaterCooler);
+    this.heaterCoolerService.setPrimaryService();
     this.fanService = this.accessory.getService(this.platform.Service.Fanv2)
       || this.accessory.addService(this.platform.Service.Fanv2);
 
@@ -67,6 +76,7 @@ export class WFRACAccessory {
     const obsoleteServiceUuids = new Set<string>([
       this.platform.Service.Switch.UUID,
       this.platform.Service.FilterMaintenance.UUID,
+      this.platform.Service.Thermostat.UUID,
     ]);
     for (const service of [...this.accessory.services]) {
       if (obsoleteServiceUuids.has(service.UUID)) {
@@ -89,18 +99,36 @@ export class WFRACAccessory {
         || this.accessory.addService(this.platform.Service.HumidifierDehumidifier);
     }
 
-    this.thermostatService.getCharacteristic(this.platform.Characteristic.TemperatureDisplayUnits)
+    this.heaterCoolerService.getCharacteristic(this.platform.Characteristic.TemperatureDisplayUnits)
       .onGet(() => this.platform.Characteristic.TemperatureDisplayUnits.CELSIUS);
-    this.thermostatService.getCharacteristic(this.platform.Characteristic.CurrentTemperature)
+    this.heaterCoolerService.getCharacteristic(this.platform.Characteristic.CurrentTemperature)
       .setProps({minValue: DeviceStatus.indoorTempList.at(0), maxValue: DeviceStatus.indoorTempList.at(-1), minStep: 0.1});
-    this.thermostatService.getCharacteristic(this.platform.Characteristic.TargetTemperature)
-      .setProps({minValue: 18, maxValue: 30, minStep: 0.5});
+    const coolingThreshold = this.heaterCoolerService.getCharacteristic(
+      this.platform.Characteristic.CoolingThresholdTemperature,
+    );
+    if ((coolingThreshold.value as number) < 18) {
+      coolingThreshold.setValue(18);
+    }
+    coolingThreshold.setProps({minValue: 18, maxValue: 30, minStep: 0.5});
+
+    const heatingThreshold = this.heaterCoolerService.getCharacteristic(
+      this.platform.Characteristic.HeatingThresholdTemperature,
+    );
+    if ((heatingThreshold.value as number) < 18) {
+      heatingThreshold.setValue(18);
+    }
+    heatingThreshold.setProps({minValue: 18, maxValue: 30, minStep: 0.5});
+    this.heaterCoolerService.getCharacteristic(this.platform.Characteristic.RotationSpeed)
+      .setProps({minValue: 0, maxValue: 100, minStep: 25});
 
     this.fanService.getCharacteristic(this.platform.Characteristic.RotationSpeed).setProps({minValue: 0, maxValue: 100, minStep: 25});
 
     if (this.dehumidifierService) {
-      this.dehumidifierService.getCharacteristic(this.platform.Characteristic.TargetHumidifierDehumidifierState)
-        .setProps({validValues: [this.platform.Characteristic.TargetHumidifierDehumidifierState.DEHUMIDIFIER]});
+      const targetDehumidifierState = this.dehumidifierService.getCharacteristic(
+        this.platform.Characteristic.TargetHumidifierDehumidifierState,
+      );
+      targetDehumidifierState.setValue(this.platform.Characteristic.TargetHumidifierDehumidifierState.DEHUMIDIFIER);
+      targetDehumidifierState.setProps({validValues: [this.platform.Characteristic.TargetHumidifierDehumidifierState.DEHUMIDIFIER]});
       this.dehumidifierService.getCharacteristic(this.platform.Characteristic.CurrentHumidifierDehumidifierState)
         .setProps({validValues: [
           this.platform.Characteristic.CurrentHumidifierDehumidifierState.INACTIVE,
@@ -108,16 +136,24 @@ export class WFRACAccessory {
         ]});
     }
 
-    this.thermostatService.getCharacteristic(this.platform.Characteristic.TargetHeatingCoolingState)
-      .onSet(this.setTargetHeatingCoolingState.bind(this));
-    this.thermostatService.getCharacteristic(this.platform.Characteristic.TargetTemperature)
+    this.heaterCoolerService.getCharacteristic(this.platform.Characteristic.Active)
+      .onSet(this.setHeaterCoolerActive.bind(this));
+    this.heaterCoolerService.getCharacteristic(this.platform.Characteristic.TargetHeaterCoolerState)
+      .onSet(this.setTargetHeaterCoolerState.bind(this));
+    this.heaterCoolerService.getCharacteristic(this.platform.Characteristic.CoolingThresholdTemperature)
       .onSet(this.setTargetTemperature.bind(this));
+    this.heaterCoolerService.getCharacteristic(this.platform.Characteristic.HeatingThresholdTemperature)
+      .onSet(this.setTargetTemperature.bind(this));
+    this.heaterCoolerService.getCharacteristic(this.platform.Characteristic.RotationSpeed)
+      .onSet(this.setHeaterCoolerRotationSpeed.bind(this));
+    this.heaterCoolerService.getCharacteristic(this.platform.Characteristic.SwingMode)
+      .onSet(this.setSwingMode.bind(this));
     this.fanService.getCharacteristic(this.platform.Characteristic.Active)
       .onSet(this.setFanActive.bind(this));
     this.fanService.getCharacteristic(this.platform.Characteristic.TargetFanState)
       .onSet(this.setTargetFanState.bind(this));
     this.fanService.getCharacteristic(this.platform.Characteristic.RotationSpeed)
-      .onSet(this.setRotationSpeed.bind(this));
+      .onSet(this.setFanRotationSpeed.bind(this));
 
     if (this.dehumidifierService) {
       this.dehumidifierService.getCharacteristic(this.platform.Characteristic.Active)
@@ -194,7 +230,43 @@ export class WFRACAccessory {
     } catch (error) {
       this.handleSetError(action, error);
     } finally {
+      if (this.refreshTimeout) {
+        clearTimeout(this.refreshTimeout);
+      }
       this.refreshTimeout = setTimeout(() => this.refreshStatus(), WFRACAccessory.REFRESH_INTERVAL);
+    }
+  }
+
+  private queueStatusUpdate(update: DeviceStatusUpdate): Promise<void> {
+    Object.assign(this.pendingStatusUpdate, update);
+
+    const completion = new Promise<void>((resolve, reject) => {
+      this.pendingStatusWaiters.push({resolve, reject});
+    });
+
+    if (!this.updateConsolidationTimeout) {
+      this.updateConsolidationTimeout = setTimeout(
+        () => this.flushStatusUpdate(),
+        WFRACAccessory.UPDATE_CONSOLIDATION_MS,
+      );
+    }
+
+    return completion;
+  }
+
+  private async flushStatusUpdate(): Promise<void> {
+    this.updateConsolidationTimeout = null;
+    const update = this.pendingStatusUpdate;
+    const waiters = this.pendingStatusWaiters;
+    this.pendingStatusUpdate = {};
+    this.pendingStatusWaiters = [];
+
+    try {
+      Object.assign(this.device.status, update);
+      await this.device.setDeviceStatus(this.device.status);
+      waiters.forEach(waiter => waiter.resolve());
+    } catch (error) {
+      waiters.forEach(waiter => waiter.reject(error));
     }
   }
 
@@ -220,15 +292,18 @@ export class WFRACAccessory {
 
   updateStatus() {
     if (this.device.status.indoorTemp !== null) {
-      this.thermostatService.updateCharacteristic(this.platform.Characteristic.CurrentTemperature, this.device.status.indoorTemp);
+      this.heaterCoolerService.updateCharacteristic(this.platform.Characteristic.CurrentTemperature, this.device.status.indoorTemp);
     }
     if (this.device.status.presetTemp !== null && this.device.status.operationMode !== 3) {
       const clamped = Math.min(30, Math.max(18, this.device.status.presetTemp));
-      this.thermostatService.updateCharacteristic(this.platform.Characteristic.TargetTemperature, clamped);
+      this.heaterCoolerService.updateCharacteristic(this.platform.Characteristic.CoolingThresholdTemperature, clamped);
+      this.heaterCoolerService.updateCharacteristic(this.platform.Characteristic.HeatingThresholdTemperature, clamped);
     }
 
-    let currentHeatingCoolingState = this.platform.Characteristic.CurrentHeatingCoolingState.OFF;
-    let targetHeatingCoolingState = this.platform.Characteristic.TargetHeatingCoolingState.OFF;
+    let heaterCoolerActive = this.platform.Characteristic.Active.INACTIVE;
+    let currentHeaterCoolerState = this.platform.Characteristic.CurrentHeaterCoolerState.INACTIVE;
+    let targetHeaterCoolerState = this.platform.Characteristic.TargetHeaterCoolerState.AUTO;
+    let heaterCoolerFanSpeed = 0;
 
     let currentFanActive = this.platform.Characteristic.Active.INACTIVE;
     let currentFanState = this.platform.Characteristic.CurrentFanState.INACTIVE;
@@ -240,39 +315,35 @@ export class WFRACAccessory {
     let targetHumidifierDehumidifierState = this.platform.Characteristic.TargetHumidifierDehumidifierState.DEHUMIDIFIER;
 
     if (this.device.status.operation) {
+      heaterCoolerActive = this.platform.Characteristic.Active.ACTIVE;
+      heaterCoolerFanSpeed = Math.max(0, this.device.status.airFlow) * 25;
       currentFanActive = this.platform.Characteristic.Active.ACTIVE;
-      fanSpeed = this.device.status.airFlow * 25;
+      fanSpeed = Math.max(0, this.device.status.airFlow) * 25;
       currentFanState = (this.device.status.airFlow === 0) ?
         this.platform.Characteristic.CurrentFanState.IDLE : this.platform.Characteristic.CurrentFanState.BLOWING_AIR;
       targetFanState = (this.device.status.airFlow === 0) ?
         this.platform.Characteristic.TargetFanState.AUTO : this.platform.Characteristic.TargetFanState.MANUAL;
       if (this.device.status.operationMode === 0 || this.device.status.operationMode === -1) {
-        targetHeatingCoolingState = this.platform.Characteristic.TargetHeatingCoolingState.AUTO;
+        targetHeaterCoolerState = this.platform.Characteristic.TargetHeaterCoolerState.AUTO;
         if (this.device.status.coolHotJudge) {
-          currentHeatingCoolingState = this.platform.Characteristic.CurrentHeatingCoolingState.HEAT;
+          currentHeaterCoolerState = this.platform.Characteristic.CurrentHeaterCoolerState.HEATING;
         } else {
-          currentHeatingCoolingState = this.platform.Characteristic.CurrentHeatingCoolingState.COOL;
+          currentHeaterCoolerState = this.platform.Characteristic.CurrentHeaterCoolerState.COOLING;
         }
       } else if (this.device.status.operationMode === 1) {
-        targetHeatingCoolingState = this.platform.Characteristic.TargetHeatingCoolingState.COOL;
-        currentHeatingCoolingState = this.platform.Characteristic.CurrentHeatingCoolingState.COOL;
+        targetHeaterCoolerState = this.platform.Characteristic.TargetHeaterCoolerState.COOL;
+        currentHeaterCoolerState = this.platform.Characteristic.CurrentHeaterCoolerState.COOLING;
       } else if (this.device.status.operationMode === 2) {
-        targetHeatingCoolingState = this.platform.Characteristic.TargetHeatingCoolingState.HEAT;
-        currentHeatingCoolingState = this.platform.Characteristic.CurrentHeatingCoolingState.HEAT;
+        targetHeaterCoolerState = this.platform.Characteristic.TargetHeaterCoolerState.HEAT;
+        currentHeaterCoolerState = this.platform.Characteristic.CurrentHeaterCoolerState.HEATING;
       } else if (this.device.status.operationMode === 3) {
-        currentHeatingCoolingState = this.platform.Characteristic.CurrentHeatingCoolingState.OFF;
-        targetHeatingCoolingState = this.platform.Characteristic.TargetHeatingCoolingState.OFF;
+        currentHeaterCoolerState = this.platform.Characteristic.CurrentHeaterCoolerState.IDLE;
       } else if (this.device.status.operationMode === 4) {
         currentDehumidifierActive = this.platform.Characteristic.Active.ACTIVE;
         currentHumidifierDehumidifierState = this.platform.Characteristic.CurrentHumidifierDehumidifierState.DEHUMIDIFYING;
         targetHumidifierDehumidifierState = this.platform.Characteristic.TargetHumidifierDehumidifierState.DEHUMIDIFIER;
 
-        if (this.device.status.presetTemp! < this.device.status.indoorTemp!) {
-          currentHeatingCoolingState = this.platform.Characteristic.CurrentHeatingCoolingState.COOL;
-        } else {
-          currentHeatingCoolingState = this.platform.Characteristic.CurrentHeatingCoolingState.OFF;
-        }
-        targetHeatingCoolingState = this.platform.Characteristic.TargetHeatingCoolingState.AUTO;
+        currentHeaterCoolerState = this.platform.Characteristic.CurrentHeaterCoolerState.IDLE;
 
         currentFanActive = this.platform.Characteristic.Active.INACTIVE;
         currentFanState = this.platform.Characteristic.CurrentFanState.BLOWING_AIR;
@@ -281,8 +352,19 @@ export class WFRACAccessory {
       }
     }
 
-    this.thermostatService.updateCharacteristic(this.platform.Characteristic.CurrentHeatingCoolingState, currentHeatingCoolingState);
-    this.thermostatService.updateCharacteristic(this.platform.Characteristic.TargetHeatingCoolingState, targetHeatingCoolingState);
+    this.heaterCoolerService.updateCharacteristic(this.platform.Characteristic.Active, heaterCoolerActive);
+    this.heaterCoolerService.updateCharacteristic(
+      this.platform.Characteristic.CurrentHeaterCoolerState, currentHeaterCoolerState,
+    );
+    this.heaterCoolerService.updateCharacteristic(
+      this.platform.Characteristic.TargetHeaterCoolerState, targetHeaterCoolerState,
+    );
+    this.heaterCoolerService.updateCharacteristic(this.platform.Characteristic.RotationSpeed, heaterCoolerFanSpeed);
+    this.heaterCoolerService.updateCharacteristic(
+      this.platform.Characteristic.SwingMode,
+      this.device.status.entrust ? this.platform.Characteristic.SwingMode.SWING_ENABLED :
+        this.platform.Characteristic.SwingMode.SWING_DISABLED,
+    );
 
     this.fanService.updateCharacteristic(this.platform.Characteristic.Active, currentFanActive);
     this.fanService.updateCharacteristic(this.platform.Characteristic.CurrentFanState, currentFanState);
@@ -300,38 +382,35 @@ export class WFRACAccessory {
     }
   }
 
-  async setTargetHeatingCoolingState(value: CharacteristicValue) {
-    return this.runSetCommand('setting heating/cooling state', async () => {
+  async setHeaterCoolerActive(value: CharacteristicValue) {
+    return this.runSetCommand('setting air conditioner active', async () => {
       switch (value) {
-        case this.platform.Characteristic.TargetHeatingCoolingState.OFF:
+        case this.platform.Characteristic.Active.INACTIVE:
           this.platform.log.info(`Turning ${this.deviceName} off`);
-          await this.device.setOperation(false);
+          await this.queueStatusUpdate({operation: false});
           break;
-        case this.platform.Characteristic.TargetHeatingCoolingState.HEAT:
+        case this.platform.Characteristic.Active.ACTIVE:
+          this.platform.log.info(`Turning ${this.deviceName} on`);
+          await this.queueStatusUpdate({operation: true});
+          break;
+      }
+    });
+  }
+
+  async setTargetHeaterCoolerState(value: CharacteristicValue) {
+    return this.runSetCommand('setting air conditioner mode', async () => {
+      switch (value) {
+        case this.platform.Characteristic.TargetHeaterCoolerState.HEAT:
           this.platform.log.info(`Setting ${this.deviceName} to heating mode`);
-          await this.device.setOperationMode(2);
-          if (!this.device.status.operation) {
-            this.platform.log.info(`Turning ${this.deviceName} on`);
-            await this.device.setOperation(true);
-          }
+          await this.queueStatusUpdate({operationMode: 2});
           break;
-        case this.platform.Characteristic.TargetHeatingCoolingState.COOL:
+        case this.platform.Characteristic.TargetHeaterCoolerState.COOL:
           this.platform.log.info(`Setting ${this.deviceName} to cooling mode`);
-          await this.device.setOperationMode(1);
-          if (!this.device.status.operation) {
-            this.platform.log.info(`Turning ${this.deviceName} on`);
-            await this.device.setOperation(true);
-          }
+          await this.queueStatusUpdate({operationMode: 1});
           break;
-        case this.platform.Characteristic.TargetHeatingCoolingState.AUTO:
+        case this.platform.Characteristic.TargetHeaterCoolerState.AUTO:
           this.platform.log.info(`Setting ${this.deviceName} to auto cooling/heating mode`);
-          await this.device.setOperationMode(0);
-          if (!this.device.status.operation) {
-            this.platform.log.info(`Turning ${this.deviceName} on`);
-            await this.device.setOperation(true);
-          }
-          this.platform.log.info(`Setting ${this.deviceName} fan speed to auto`);
-          await this.device.setAirflow(0);
+          await this.queueStatusUpdate({operationMode: 0});
           break;
       }
     });
@@ -341,7 +420,23 @@ export class WFRACAccessory {
     return this.runSetCommand('setting temperature', async () => {
       const temperature = value as number;
       this.platform.log.info(`Setting ${this.deviceName} temperature to ${temperature}°C`);
-      await this.device.setPresetTemp(temperature);
+      await this.queueStatusUpdate({presetTemp: temperature});
+    });
+  }
+
+  async setHeaterCoolerRotationSpeed(value: CharacteristicValue) {
+    return this.runSetCommand('setting air conditioner fan speed', async () => {
+      const airflow = value === 0 ? 0 : Math.round(value as number / 25);
+      this.platform.log.info(`Setting air conditioner fan speed for ${this.deviceName} to ${value}`);
+      await this.queueStatusUpdate({airFlow: airflow});
+    });
+  }
+
+  async setSwingMode(value: CharacteristicValue) {
+    return this.runSetCommand('setting air conditioner swing mode', async () => {
+      const enabled = value === this.platform.Characteristic.SwingMode.SWING_ENABLED;
+      this.platform.log.info(`Setting ${this.deviceName} 3D auto swing ${enabled ? 'on' : 'off'}`);
+      await this.queueStatusUpdate({entrust: enabled});
     });
   }
 
@@ -351,20 +446,19 @@ export class WFRACAccessory {
         case this.platform.Characteristic.Active.INACTIVE:
           if (this.device.status.operationMode === 3) {
             this.platform.log.info(`Turning ${this.deviceName} off after setting fan inactive`);
-            await this.device.setOperation(false);
+            await this.queueStatusUpdate({operation: false});
           } else {
             this.platform.log.info(`Setting ${this.deviceName} fan speed to AUTO`);
-            await this.device.setAirflow(0);
+            await this.queueStatusUpdate({airFlow: 0});
           }
           break;
         case this.platform.Characteristic.Active.ACTIVE:
           if (!this.device.status.operation) {
             this.platform.log.info(`Turning ${this.deviceName} on and setting operation mode to fan mode`);
-            await this.device.setOperationMode(3);
-            await this.device.setOperation(true);
+            await this.queueStatusUpdate({operationMode: 3, operation: true});
           } else {
             this.platform.log.info(`Setting ${this.deviceName} fan speed to AUTO`);
-            await this.device.setAirflow(0);
+            await this.queueStatusUpdate({airFlow: 0});
           }
           break;
       }
@@ -376,7 +470,7 @@ export class WFRACAccessory {
       switch (value) {
         case this.platform.Characteristic.TargetFanState.AUTO:
           this.platform.log.info(`Setting ${this.deviceName} fan speed to AUTO`);
-          await this.device.setAirflow(0);
+          await this.queueStatusUpdate({airFlow: 0});
           break;
         case this.platform.Characteristic.TargetFanState.MANUAL:
           break;
@@ -384,20 +478,22 @@ export class WFRACAccessory {
     });
   }
 
-  async setRotationSpeed(value: CharacteristicValue) {
+  async setFanRotationSpeed(value: CharacteristicValue) {
     return this.runSetCommand('setting rotation speed', async () => {
+      const update: DeviceStatusUpdate = {};
       if (value === 0) {
         this.platform.log.info(`Setting fan speed for ${this.deviceName} to auto`);
-        await this.device.setAirflow(0);
+        update.airFlow = 0;
       } else {
         this.platform.log.info(`Setting fan speed for ${this.deviceName} to ${value}`);
-        await this.device.setAirflow(Math.round(value as number / 25));
+        update.airFlow = Math.round(value as number / 25);
       }
       if (!this.device.status.operation) {
         this.platform.log.info(`Turning ${this.deviceName} on and setting operation mode to fan mode`);
-        await this.device.setOperationMode(3);
-        await this.device.setOperation(true);
+        update.operationMode = 3;
+        update.operation = true;
       }
+      await this.queueStatusUpdate(update);
     });
   }
 
@@ -406,18 +502,13 @@ export class WFRACAccessory {
       switch (value) {
         case this.platform.Characteristic.Active.INACTIVE:
           this.platform.log.info(`Setting ${this.deviceName} dehumidifier inactive`);
-          await this.device.setOperationMode(0);
+          await this.queueStatusUpdate({operationMode: 0});
           break;
         case this.platform.Characteristic.Active.ACTIVE:
           this.platform.log.info(`Setting ${this.deviceName} dehumidifier active`);
-          await this.device.setOperationMode(4);
-          if (!this.device.status.operation) {
-            this.platform.log.info(`Turning ${this.deviceName} on`);
-            await this.device.setOperation(true);
-          }
+          await this.queueStatusUpdate({operationMode: 4, operation: true});
           break;
       }
     });
   }
 }
-

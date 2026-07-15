@@ -5,7 +5,7 @@
 [![npm](https://img.shields.io/npm/dt/homebridge-mhi-wfrac)](https://www.npmjs.com/package/homebridge-mhi-wfrac)
 
 This is a Homebridge plugin for Mitsubishi WF-RAC air conditioners controlled by the Smart M-Air app.
-This plugin exposes three services to HomeKit as one device: a thermostat service for HEATing and COOLing (or AUTO), a fan (additional to the thermostat, or standalone for FAN mode), and a dehumidifier.
+This plugin exposes three services to HomeKit as one device: an air conditioner for heating, cooling, and auto mode, a fan for fan-only mode, and a dehumidifier for dry mode.
 
 ## Prerequisites
 
@@ -67,10 +67,10 @@ Also, the `timestamp` can be any number, but it must be a valid UNIX timestamp.
 For setting the status of the air conditioner, you will need to use the Operator ID that is registered to the air conditioner and a valid recent timestamp.
 
 ## Specific Homekit behavior
-- **Thermostat**: turning the thermostat off will turn off the air conditioner. Turning it to heat, cool or auto will turn on the air conditioner and switch to the corresponding mode as expected.
-- **Fan**: turning the fan on while the thermostat is turned off, will turn on the air conditioner and switch to fan mode. The thermostat will be displayed as off in this case.
+- **Air conditioner**: the primary HomeKit service is a Heater/Cooler, so the Home app displays the device as an AC unit. Its power, auto/heat/cool mode, target temperature, fan speed, and 3D auto swing controls map directly to the corresponding WF-RAC state fields.
+- **Fan**: turning on the separate fan service while the air conditioner is off turns on the unit in fan-only mode. HomeKit does not include fan-only in its Heater/Cooler target-mode characteristic, so this remains a separate service.
 - **Fan speed**: Fan speed 0% means auto mode, 25% means low speed, 50% means medium speed, 75% means high and 100% means highest speed. In fan mode, however, switching to 0% will turn off the fan. So, even though the device supports it, you cannot set your air conditioner to fan mode with fan speed auto via Homekit. Notice that Homekit does know an AUTO TargetFanState (which we try to support), but it doesn't seem to be implemented as nicely in the Home app as we would like it.
-- **Dehumidifier**: turning the dehumidifier on will turn on the air conditioner and switch to dehumidifier mode. The thermostat will be displayed as auto mode in this case (as you are able to set a target temperature in drying mode), and effectively cooling or heating depending on the current and target temperature. Controlling the fan is not possible in dehumidifier mode as the air conditioner does not support it.
+- **Dehumidifier**: turning the dehumidifier on turns on the air conditioner in dry mode. HomeKit does not include dry mode in its Heater/Cooler target-mode characteristic, so this remains a separate service. Controlling the fan is not possible in dry mode because the air conditioner does not support it.
 - **Temperature**: For some reason, temperatures are not reported on .1 decimals in Homekit, even though we know a more accurate value. The target temperature should be between 18 and 30 degrees, with 0.5 degree increments.
 - **Humidity**: We do not have humidity sensors in the air conditioner, so the humidity is not reported, resulting in a Homekit value of 0%.
 - **Outdoor temperature**: We do not (yet) report the outdoor temperature, though we could provide a separate accessory for it.
@@ -81,6 +81,7 @@ The plugin includes automatic retry logic with exponential backoff to handle tra
 - **Automatic retries**: Up to 3 attempts for failed requests (1s → 2s → 4s delays)
 - **Supported errors**: Connection timeouts, socket hang ups, connection refused, and other network errors
 - **Status polling**: Automatically skips during active commands to prevent conflicts
+- **Consolidated writes**: HomeKit changes received within 500 ms are merged into the last read state and sent as one `setAirconStat` packet, matching the Home Assistant integration's write flow
 
 If you experience persistent connection errors (ECONNREFUSED, socket hang up, etc.), check the following:
 - Verify the air conditioner IP address is correct and reachable
@@ -91,7 +92,7 @@ If you experience persistent connection errors (ECONNREFUSED, socket hang up, et
 
 ## Limitations
 
-- **Fan Direction Control**: The horizontal and vertical direction of the fan cannot be managed via Homebridge, as HomeKit does not provide a suitable service for this. There is RotationDirection and SwingMode, but they seem too limited for this purpose (though perhaps the 3D auto swing could be implemented as a SwingMode). You should configure these settings in the Smart M-Air app or via the remote control, Homebridge will not override these settings.
+- **Fan Direction Control**: HomeKit's Swing Mode control maps to the WF-RAC 3D auto (`Entrust`) setting. Individual horizontal and vertical vane positions are not exposed because HomeKit has no equivalent controls; configure those positions in Smart M-Air or with the remote.
 - **Outdoor Temperature**: The outdoor temperature is not implemented yet (we should provide a separate accessory for it).
 - **Error codes**: The plugin does not provide device error codes or other status information yet (firmware version, electricity usage, etc.), though it could be implemented in the future because the air conditioner does provide this information.
 

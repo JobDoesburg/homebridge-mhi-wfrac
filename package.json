@@ -29,7 +29,7 @@
   "main": "dist/index.js",
   "scripts": {
     "lint": "eslint src --max-warnings=0",
-    "test": "npm run lint && npm run build",
+    "test": "npm run lint && npm run build && node --test test/*.test.mjs",
     "watch": "npm run build && npm link && nodemon",
     "build": "rimraf ./dist && tsc",
     "prepublishOnly": "npm run lint && npm run build",
@@ -54,6 +54,7 @@
     "@typescript-eslint/eslint-plugin": "^8.59.0",
     "@typescript-eslint/parser": "^8.59.0",
     "eslint": "^10.2.1",
+    "hap-nodejs": "0.14.3",
     "homebridge": "^1.11.4",
     "nodemon": "^3.1.14",
     "rimraf": "^6.1.3",
