@@ -10,6 +10,7 @@ export class HomebridgeMHIWFRACPlatform implements DynamicPlatformPlugin {
   public readonly Characteristic: typeof Characteristic;
 
   public readonly accessories: PlatformAccessory[] = [];
+  private readonly generatedOperatorIdListeners = new Set<(operatorId: string) => void>();
 
   constructor(
     public readonly log: Logging,
@@ -61,6 +62,20 @@ export class HomebridgeMHIWFRACPlatform implements DynamicPlatformPlugin {
     const generated = `homebridge-${randomUUID()}`;
     this.log.info(`No operatorId configured — generated a new one: ${generated}`);
     return { operatorId: generated, selfManaged: true };
+  }
+
+  onGeneratedOperatorIdChanged(listener: (operatorId: string) => void): void {
+    this.generatedOperatorIdListeners.add(listener);
+  }
+
+  persistGeneratedOperatorId(operatorId: string): void {
+    for (const accessory of this.accessories) {
+      accessory.context.generatedOperatorId = operatorId;
+    }
+    for (const listener of this.generatedOperatorIdListeners) {
+      listener(operatorId);
+    }
+    this.log.info(`Persisted legacy-compatible operatorId=${operatorId}`);
   }
 
   configureDevices() {

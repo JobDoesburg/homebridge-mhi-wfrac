@@ -29,7 +29,7 @@
   "main": "dist/index.js",
   "scripts": {
     "lint": "eslint src --max-warnings=0",
-    "test": "npm run lint && npm run build",
+    "test": "npm run lint && npm run build && node --test test/*.test.mjs",
     "watch": "npm run build && npm link && nodemon",
     "build": "rimraf ./dist && tsc",
     "prepublishOnly": "npm run lint && npm run build",

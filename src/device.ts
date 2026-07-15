@@ -2,6 +2,9 @@ import {Buffer} from 'buffer';
 import https from 'https';
 import {Logging} from 'homebridge';
 import axios from 'axios';
+import {randomInt} from 'crypto';
+
+export const generateLegacyOperatorId = (): string => randomInt(0, 10_000_000_000).toString().padStart(10, '0');
 
 export class DeviceStatus {
   // eslint-disable-next-line max-len
@@ -317,6 +320,10 @@ export class DeviceStatus {
 
     statByte[12] |= this.entrust ? 12 : 8;
 
+    if (!this.coolHotJudge) {
+      statByte[8] |= 8;
+    }
+
     if (this.modelNo === 1) {
       statByte[10] |= this.isVacantProperty ? 1 : 0;
     }
@@ -451,7 +458,7 @@ export class DeviceClient {
   private readonly ipAddress: string;
   private readonly port: number;
 
-  private readonly operatorId: string;
+  private operatorId: string;
   private readonly deviceId: string;
   // airconId may be refreshed after a getDeviceInfo call: some firmware returns
   // an airconId that differs from the MAC, and updateAccountInfo must be called
@@ -467,6 +474,7 @@ export class DeviceClient {
   private nextRequestAfter = 0;
 
   private useHttps: boolean | null = null; // null = not yet detected
+  private legacyOperatorFallbackAttempted = false;
   // Newer WF-RAC firmware (HTTPS on 51443) needs TLS 1.2 with ALPN restricted to http/1.1.
   // Without this Node 24's TLS defaults (TLS 1.3, h2 in ALPN) cause the handshake to fail or hang.
   // The device also only accepts a single connection at a time, hence Connection: close.
@@ -485,6 +493,8 @@ export class DeviceClient {
     airconId: string,
     log: Logging,
     ignoreConnectionErrors: boolean = true,
+    private readonly onLegacyOperatorIdAccepted?: (operatorId: string) => void,
+    private readonly legacyOperatorIdFactory: () => string = generateLegacyOperatorId,
   ) {
     this.ipAddress = ipAddress;
     this.port = port;
@@ -493,6 +503,10 @@ export class DeviceClient {
     this.airconId = airconId;
     this.log = log;
     this.ignoreConnectionErrors = ignoreConnectionErrors;
+  }
+
+  setOperatorId(operatorId: string): void {
+    this.operatorId = operatorId;
   }
 
   public isConnectionError(error: Error): boolean {
@@ -667,6 +681,10 @@ export class DeviceClient {
       this.log.info(`Device ${this.deviceId} (${this.ipAddress}): using HTTPS`);
       return response.data;
     } catch (httpsError) {
+      if (this.isUnsupportedCommandError(httpsError)) {
+        this.useHttps = true;
+        throw httpsError;
+      }
       this.log.debug(`HTTPS failed for ${this.deviceId} (${this.ipAddress}), trying HTTP: ${(httpsError as Error).message}`);
     }
 
@@ -676,35 +694,47 @@ export class DeviceClient {
       this.log.info(`Device ${this.deviceId} (${this.ipAddress}): using HTTP`);
       return response.data;
     } catch (httpError) {
+      if (this.isUnsupportedCommandError(httpError)) {
+        this.useHttps = false;
+        throw httpError;
+      }
       this.log.debug(`HTTP also failed for ${this.deviceId} (${this.ipAddress}): ${(httpError as Error).message}`);
     }
 
     throw new Error(`Unable to connect to device ${this.deviceId} (${this.ipAddress}) via HTTPS or HTTP`);
   }
 
-  async call(command: string, contents: RequestContents|null = null, retries = 3): Promise<DeviceResponse> {
-    let data;
-    if (contents) {
-      data = {
-        apiVer: '1.0',
-        command: command,
-        deviceId: this.deviceId,
-        operatorId: this.operatorId,
-        timestamp: Math.floor(new Date().valueOf() / 1000),
-        contents: contents,
-      };
-    } else {
-      data = {
-        apiVer: '1.0',
-        command: command,
-        deviceId: this.deviceId,
-        operatorId: this.operatorId,
-        timestamp: Math.floor(new Date().valueOf() / 1000),
-      };
+  private isUnsupportedCommandError(error: unknown): boolean {
+    if (!axios.isAxiosError(error) || error.response?.status !== 501) {
+      return false;
     }
-    const body = JSON.stringify(data);
 
-    // Auto-detect protocol on first call
+    const responseText = typeof error.response.data === 'string'
+      ? error.response.data
+      : JSON.stringify(error.response.data ?? '');
+    return /not supported this command/i.test(`${error.message} ${error.response.statusText ?? ''} ${responseText}`);
+  }
+
+  private buildRequestBody(command: string, contents: RequestContents | null, operatorId: string): string {
+    const data = {
+      apiVer: '1.0',
+      command,
+      deviceId: this.deviceId,
+      operatorId,
+      timestamp: Math.floor(Date.now() / 1000),
+      ...(contents ? {contents} : {}),
+    };
+    return JSON.stringify(data);
+  }
+
+  private async callWithOperatorId(
+    command: string,
+    contents: RequestContents | null,
+    operatorId: string,
+    retries: number,
+  ): Promise<DeviceResponse> {
+    const body = this.buildRequestBody(command, contents, operatorId);
+
     if (this.useHttps === null) {
       return await this.detectProtocol(body, command);
     }
@@ -714,15 +744,13 @@ export class DeviceClient {
     let lastError: Error | null = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
-        // We must use axios, because fetch lowercases the headers, which the device does not like
         const response = await this.sendRequest(url, body, this.useHttps);
         return response.data;
       } catch (error) {
         lastError = error as Error;
 
-        // If this is a connection error and we have retries left, wait and retry
         if (this.isConnectionError(lastError) && attempt < retries) {
-          const backoffMs = Math.min(1000 * Math.pow(2, attempt), 5000); // Exponential backoff, max 5 seconds
+          const backoffMs = Math.min(1000 * Math.pow(2, attempt), 5000);
           const attemptInfo = `attempt ${attempt + 1}/${retries + 1}`;
           this.log.warn(
             `Connection error on ${attemptInfo} for ${this.deviceId}: ${lastError.message}. Retrying in ${backoffMs}ms...`,
@@ -731,12 +759,36 @@ export class DeviceClient {
           continue;
         }
 
-        // If it's not a connection error or we're out of retries, throw
         throw lastError;
       }
     }
 
-    // Should never reach here, but TypeScript needs it
     throw lastError || new Error('Unknown error during API call');
+  }
+
+  async call(command: string, contents: RequestContents|null = null, retries = 3): Promise<DeviceResponse> {
+    try {
+      return await this.callWithOperatorId(command, contents, this.operatorId, retries);
+    } catch (error) {
+      if (!this.onLegacyOperatorIdAccepted || this.legacyOperatorFallbackAttempted ||
+          /^\d{10}$/.test(this.operatorId) || !this.isUnsupportedCommandError(error)) {
+        throw error;
+      }
+
+      this.legacyOperatorFallbackAttempted = true;
+      const previousOperatorId = this.operatorId;
+      const legacyOperatorId = this.legacyOperatorIdFactory();
+      const fallbackContents = contents?.accountId === previousOperatorId
+        ? {...contents, accountId: legacyOperatorId}
+        : contents;
+
+      this.log.warn(
+        `Device ${this.deviceId} rejected the operator ID format; retrying once with a legacy 10-digit operator ID.`,
+      );
+      const response = await this.callWithOperatorId(command, fallbackContents, legacyOperatorId, retries);
+      this.operatorId = legacyOperatorId;
+      this.onLegacyOperatorIdAccepted(legacyOperatorId);
+      return response;
+    }
   }
 }

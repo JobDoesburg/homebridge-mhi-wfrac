@@ -11,7 +11,7 @@ export class WFRACAccessory {
   private readonly deviceId: string;
   private readonly ipAddress: string;
   private readonly port = 51443;
-  private readonly operatorId : string;
+  private operatorId : string;
 
   private device: DeviceClient;
 
@@ -48,7 +48,16 @@ export class WFRACAccessory {
       airconId,
       this.platform.log,
       this.platform.config.ignoreConnectionErrors,
+      selfManaged ? operatorId => this.platform.persistGeneratedOperatorId(operatorId) : undefined,
     );
+
+    if (selfManaged) {
+      this.platform.onGeneratedOperatorIdChanged((updatedOperatorId) => {
+        this.operatorId = updatedOperatorId;
+        this.accessory.context.generatedOperatorId = updatedOperatorId;
+        this.device.setOperatorId(updatedOperatorId);
+      });
+    }
 
     // set accessory information
     this.accessory.getService(this.platform.Service.AccessoryInformation)!
@@ -420,4 +429,3 @@ export class WFRACAccessory {
     });
   }
 }
-

@@ -45,6 +45,8 @@ The Operator ID identifies a remote control to the air conditioner. The device a
 
 **Self-register (recommended, no config required).** Leave the `operatorId` field blank. The plugin will generate its own ID, register itself as a new remote on each device on first contact (via `updateAccountInfo`), and persist the ID across restarts. When you remove a device from the plugin's config, the plugin deregisters itself (via `deleteAccountInfo`) so the device's remote slot is freed.
 
+Some early WF-RAC firmware rejects UUID-style operator IDs with HTTP 501 (`Not supported this command`). In self-register mode the plugin detects that exact response, retries once with a 10-digit numeric ID, and persists the accepted ID. Other errors and newer firmware keep the normal UUID path unchanged.
+
 **Mirror an existing remote.** If you'd rather reuse the operator ID of your Smart M-Air app (so the plugin doesn't take its own remote slot), set `operatorId` in the config to that value. In this mode the plugin will not register or deregister anything — it simply impersonates the Smart M-Air app.
 
 To find your Smart M-Air app's Operator ID for the mirror approach, you can do a simple `curl` request to the air conditioner's IP address. The command name must be included in the URL path (`/beaver/command/<command>`).
