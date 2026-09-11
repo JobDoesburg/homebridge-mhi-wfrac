@@ -51,14 +51,27 @@ export class HomebridgeMHIWFRACPlatform implements DynamicPlatformPlugin {
       return { operatorId: configured, selfManaged: false };
     }
 
-    const fromCache = this.accessories
+    // Prefer an identity already registered by this installation. This avoids
+    // abandoning a working remote when another accessory has a failed cached ID.
+    const registered = this.accessories.find(a => a.context.registered && a.context.generatedOperatorId);
+    const fromCache = (registered?.context.generatedOperatorId as string | undefined) || this.accessories
       .map(a => a.context.generatedOperatorId as string | undefined)
       .find(v => !!v);
     if (fromCache) {
+      // v2.5.2 generated 47-character IDs. WF-RAC-HTTPS firmware 025 rejects
+      // these with malformed JSON, before it can process getDeviceInfo.
+      // Migrate failed registrations deterministically; retain working remotes
+      // on firmware that accepted the old ID so their account slots aren't lost.
+      const legacy = /^homebridge-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(fromCache);
+      if (legacy && !registered) {
+        this.log.info('Migrating an unregistered Homebridge operator ID to a firmware-compatible UUID.');
+        return { operatorId: legacy[1], selfManaged: true };
+      }
       return { operatorId: fromCache, selfManaged: true };
     }
 
-    const generated = `homebridge-${randomUUID()}`;
+    // Use the same 36-character UUID format as Smart M-Air, without a prefix.
+    const generated = randomUUID();
     this.log.info(`No operatorId configured — generated a new one: ${generated}`);
     return { operatorId: generated, selfManaged: true };
   }
@@ -93,7 +106,13 @@ export class HomebridgeMHIWFRACPlatform implements DynamicPlatformPlugin {
         existingAccessory.context.device.mac = device.mac;
         existingAccessory.context.device.deviceId = device.deviceId || device.mac;
         existingAccessory.context.device.hideDehumidifier = device.hideDehumidifier || false;
+        // A cached registration belongs to its operator ID, not just the unit.
+        // In particular, mirror -> self-register must register the new identity.
+        if (!selfManaged || existingAccessory.context.generatedOperatorId !== operatorId) {
+          existingAccessory.context.registered = false;
+        }
         existingAccessory.context.generatedOperatorId = selfManaged ? operatorId : undefined;
+        this.api.updatePlatformAccessories([existingAccessory]);
         new WFRACAccessory(this, existingAccessory, device.ip, operatorId, selfManaged);
       } else {
         this.log.info('Adding new accessory:', device.name);
