@@ -20,13 +20,12 @@ This plugin exposes three services to HomeKit as one device: a thermostat servic
    npm install -g homebridge-mhi-wfrac
    ```
 
-2. **Update Homebridge Configuration**: Update your Homebridge `config.json` file with the platform configuration, setting the Operator ID that corresponds to your Smart M-Air app, and configuring all the devices you want to configure (name, mac and ip).
+2. **Update Homebridge Configuration**: Add the platform and configure your devices (name, mac and ip). Leave Operator ID blank to let Homebridge register automatically.
    ```json
      {
          "platforms": [
             {
                 "platform": "HomebridgeMHIWFRACPlatform",
-                "operatorId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
                 "devices": [
                    {
                        "name": "Living Room",
@@ -44,6 +43,8 @@ This plugin exposes three services to HomeKit as one device: a thermostat servic
 The Operator ID identifies a remote control to the air conditioner. The device allows up to four registered remotes. There are two ways to set this up:
 
 **Self-register (recommended, no config required).** Leave the `operatorId` field blank. The plugin will generate its own ID, register itself as a new remote on each device on first contact (via `updateAccountInfo`), and persist the ID across restarts. When you remove a device from the plugin's config, the plugin deregisters itself (via `deleteAccountInfo`) so the device's remote slot is freed.
+
+The generated ID is a standard 36-character UUID. Version 2.5.2 generated longer `homebridge-` IDs that WF-RAC-HTTPS firmware 025 rejects with empty IDs and an invalid `"timestamp":,` response. Failed cached registrations are automatically migrated to the UUID without the prefix. Already registered IDs and manually configured Operator IDs are preserved. If you used the manual Operator ID workaround, remove that field after updating to enable automatic registration. IP and MAC configuration is still required; this is remote registration, not network discovery.
 
 **Mirror an existing remote.** If you'd rather reuse the operator ID of your Smart M-Air app (so the plugin doesn't take its own remote slot), set `operatorId` in the config to that value. In this mode the plugin will not register or deregister anything — it simply impersonates the Smart M-Air app.
 
