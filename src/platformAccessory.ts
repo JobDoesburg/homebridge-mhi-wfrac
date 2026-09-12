@@ -35,6 +35,7 @@ export class WFRACAccessory {
     this.ipAddress = ip;
     this.operatorId = operatorId;
     this.selfManaged = selfManaged;
+    const indoorTemperatureOffset = accessory.context.device.indoorTemperatureOffset ?? 0;
 
     accessory.context.device.ip = ip;
 
@@ -48,6 +49,7 @@ export class WFRACAccessory {
       airconId,
       this.platform.log,
       this.platform.config.ignoreConnectionErrors,
+      indoorTemperatureOffset,
     );
 
     // set accessory information
@@ -92,7 +94,11 @@ export class WFRACAccessory {
     this.thermostatService.getCharacteristic(this.platform.Characteristic.TemperatureDisplayUnits)
       .onGet(() => this.platform.Characteristic.TemperatureDisplayUnits.CELSIUS);
     this.thermostatService.getCharacteristic(this.platform.Characteristic.CurrentTemperature)
-      .setProps({minValue: DeviceStatus.indoorTempList.at(0), maxValue: DeviceStatus.indoorTempList.at(-1), minStep: 0.1});
+      .setProps({
+        minValue: DeviceStatus.indoorTempList.at(0)! + indoorTemperatureOffset,
+        maxValue: DeviceStatus.indoorTempList.at(-1)! + indoorTemperatureOffset,
+        minStep: 0.1,
+      });
     this.thermostatService.getCharacteristic(this.platform.Characteristic.TargetTemperature)
       .setProps({minValue: 18, maxValue: 30, minStep: 0.5});
 
@@ -420,4 +426,3 @@ export class WFRACAccessory {
     });
   }
 }
-

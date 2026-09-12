@@ -50,6 +50,7 @@ export class DeviceStatus {
   entrust: boolean;
   errorCode: string;
   indoorTemp: number | null;
+  indoorTemperatureOffset: number;
   isAutoHeating: boolean;
   isSelfCleanOperation: boolean;
   isSelfCleanReset: boolean;
@@ -62,13 +63,14 @@ export class DeviceStatus {
   windDirectionLR: number;
   windDirectionUD: number;
 
-  constructor() {
+  constructor(indoorTemperatureOffset = 0) {
     this.airFlow = -1;
     this.coolHotJudge = false;
     this.electric = 0;
     this.entrust = false;
     this.errorCode = '';
     this.indoorTemp = null;
+    this.indoorTemperatureOffset = indoorTemperatureOffset;
     this.isAutoHeating = false;
     this.isSelfCleanOperation = false;
     this.isSelfCleanReset = false;
@@ -82,8 +84,8 @@ export class DeviceStatus {
     this.windDirectionUD = -1;
   }
 
-  static fromBase64(base64: string): DeviceStatus {
-    const deviceStatus = new DeviceStatus();
+  static fromBase64(base64: string, indoorTemperatureOffset = 0): DeviceStatus {
+    const deviceStatus = new DeviceStatus(indoorTemperatureOffset);
 
     const statByte = Buffer.from(base64.replace('\n', ''), 'base64').toString('binary');
     const statByteArray = [];
@@ -148,7 +150,7 @@ export class DeviceStatus {
       }
 
       if ((vals[i] === -128) && (vals[i + 1] === 32)) {
-        deviceStatus.indoorTemp = this.indoorTempList[vals[i + 2] & 0xFF];
+        deviceStatus.indoorTemp = this.indoorTempList[vals[i + 2] & 0xFF] + deviceStatus.indoorTemperatureOffset;
       }
 
       if ((vals[i] === -108) && (vals[i + 1] === 16)) {
@@ -460,8 +462,9 @@ export class DeviceClient {
 
   private readonly log: Logging;
   private readonly ignoreConnectionErrors: boolean;
+  private readonly indoorTemperatureOffset: number;
 
-  public status = new DeviceStatus();
+  public status: DeviceStatus;
   private commandQueue: Promise<void> = Promise.resolve();
   public isCommandInProgress = false;
   private nextRequestAfter = 0;
@@ -485,6 +488,7 @@ export class DeviceClient {
     airconId: string,
     log: Logging,
     ignoreConnectionErrors: boolean = true,
+    indoorTemperatureOffset: number = 0,
   ) {
     this.ipAddress = ipAddress;
     this.port = port;
@@ -493,6 +497,8 @@ export class DeviceClient {
     this.airconId = airconId;
     this.log = log;
     this.ignoreConnectionErrors = ignoreConnectionErrors;
+    this.indoorTemperatureOffset = indoorTemperatureOffset;
+    this.status = new DeviceStatus(indoorTemperatureOffset);
   }
 
   public isConnectionError(error: Error): boolean {
@@ -521,7 +527,7 @@ export class DeviceClient {
         if (data.result !== 0 || !data.contents?.airconStat) {
           throw new Error(`Device ${this.deviceId} (${this.ipAddress}) returned an unexpected response: ${JSON.stringify(data)}`);
         }
-        this.status = DeviceStatus.fromBase64(data.contents.airconStat);
+        this.status = DeviceStatus.fromBase64(data.contents.airconStat, this.indoorTemperatureOffset);
         return this.status;
       } finally {
         this.isCommandInProgress = false;
@@ -608,7 +614,7 @@ export class DeviceClient {
         if (data.result !== 0 || !data.contents?.airconStat) {
           throw new Error(`Device ${this.deviceId} (${this.ipAddress}) returned an unexpected response: ${JSON.stringify(data)}`);
         }
-        this.status = DeviceStatus.fromBase64(data.contents.airconStat);
+        this.status = DeviceStatus.fromBase64(data.contents.airconStat, this.indoorTemperatureOffset);
         return this.status;
       } catch (error) {
         if (!this.ignoreConnectionErrors || !this.isConnectionError(error as Error)) {

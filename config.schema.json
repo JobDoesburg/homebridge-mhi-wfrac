@@ -61,6 +61,13 @@
               "required": false,
               "default": false,
               "description": "Hide the dehumidifier accessory if your AC unit doesn't support dry mode."
+            },
+            "indoorTemperatureOffset": {
+              "title": "Indoor Temperature Offset",
+              "type": "number",
+              "required": false,
+              "default": 0,
+              "description": "Offset in °C applied only to the indoor temperature displayed in HomeKit."
             }
           }
         }
