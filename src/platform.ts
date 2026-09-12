@@ -71,6 +71,7 @@ export class HomebridgeMHIWFRACPlatform implements DynamicPlatformPlugin {
       ip: string;
       name: string;
       hideDehumidifier?: boolean;
+      indoorTemperatureOffset?: number;
     }
 
     const deviceConfigs: DeviceConfig[] = this.config.devices ?? [];
@@ -93,6 +94,7 @@ export class HomebridgeMHIWFRACPlatform implements DynamicPlatformPlugin {
         existingAccessory.context.device.mac = device.mac;
         existingAccessory.context.device.deviceId = device.deviceId || device.mac;
         existingAccessory.context.device.hideDehumidifier = device.hideDehumidifier || false;
+        existingAccessory.context.device.indoorTemperatureOffset = device.indoorTemperatureOffset ?? 0;
         existingAccessory.context.generatedOperatorId = selfManaged ? operatorId : undefined;
         new WFRACAccessory(this, existingAccessory, device.ip, operatorId, selfManaged);
       } else {
@@ -105,6 +107,7 @@ export class HomebridgeMHIWFRACPlatform implements DynamicPlatformPlugin {
           deviceId: device.deviceId || device.mac,
           uniqueId: uuid,
           hideDehumidifier: device.hideDehumidifier || false,
+          indoorTemperatureOffset: device.indoorTemperatureOffset ?? 0,
         };
         accessory.context.generatedOperatorId = selfManaged ? operatorId : undefined;
 

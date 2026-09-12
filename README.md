@@ -31,13 +31,16 @@ This plugin exposes three services to HomeKit as one device: a thermostat servic
                    {
                        "name": "Living Room",
                        "mac": "00:00:00:00:00:00",
-                       "ip": ""
+                       "ip": "",
+                       "indoorTemperatureOffset": 0
                    }
                 ]
             }
          ]
      }
    ```      
+
+`indoorTemperatureOffset` is optional and defaults to `0`. Set it to a positive or negative number of degrees Celsius to adjust only the indoor temperature shown in HomeKit; it does not change the AC's temperature measurements or target-temperature commands.
 
 ### Operator ID
 
