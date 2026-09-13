@@ -1,0 +1,163 @@
+{
+  "decoded": {
+    "issue43": {
+      "base64": "AAeriaj/AAAAAAARigAAAAAAAf/////vW4EECQEokQAAiAIAAQAAAAAAAAOAIJH/gBC0/5QQAgCQsQ==",
+      "operation": true,
+      "operationMode": 1,
+      "airFlow": 2,
+      "windDirectionUD": 1,
+      "windDirectionLR": 2,
+      "presetTemp": 20.0,
+      "entrust": false,
+      "coolHotJudge": false,
+      "modelNoRaw": 1,
+      "modelNo": 1,
+      "isVacantProperty": false,
+      "isSelfCleanOperation": false,
+      "errorCode": "00",
+      "indoorTemp": 21.5,
+      "outdoorTemp": 22.2,
+      "electric": 0.5
+    },
+    "pr44": {
+      "base64": "AAeqmqT/AAAAAAASigAAAAAAAf////8hZoEEARIwmgAAgAIAAgAAAAAAAAOAIJr/gBCb/5QQAAB41A==",
+      "operation": true,
+      "operationMode": 0,
+      "airFlow": 3,
+      "windDirectionUD": 2,
+      "windDirectionLR": 3,
+      "presetTemp": 24.0,
+      "entrust": false,
+      "coolHotJudge": true,
+      "modelNoRaw": 1,
+      "modelNo": 1,
+      "isVacantProperty": false,
+      "isSelfCleanOperation": false,
+      "errorCode": "00",
+      "indoorTemp": 23.7,
+      "outdoorTemp": 16.2,
+      "electric": 0.0
+    }
+  },
+  "encoded": [
+    {
+      "state": {
+        "operation": true,
+        "operationMode": 1,
+        "airFlow": 2,
+        "windDirectionUD": 1,
+        "windDirectionLR": 2,
+        "presetTemp": 20.0,
+        "entrust": false,
+        "coolHotJudge": false,
+        "modelNoRaw": 1,
+        "modelNo": 1,
+        "isVacantProperty": false,
+        "isSelfCleanOperation": false
+      },
+      "base64": "AACriaj/AAAIAAARigAAAAAAAf////+DbQEACQEo/wAACAAAAYAAAAAAAAH/////9Pg="
+    },
+    {
+      "state": {
+        "operation": true,
+        "operationMode": 0,
+        "airFlow": 3,
+        "windDirectionUD": 2,
+        "windDirectionLR": 3,
+        "presetTemp": 24.0,
+        "entrust": false,
+        "coolHotJudge": true,
+        "modelNoRaw": 1,
+        "modelNo": 1,
+        "isVacantProperty": false,
+        "isSelfCleanOperation": false
+      },
+      "base64": "AACjmrD/AAAAAAASigAAAAAAAf/////KFQEAARIw/wAAAAAAAoAAAAAAAAH/////vYA="
+    },
+    {
+      "state": {
+        "operation": false,
+        "operationMode": 2,
+        "airFlow": 0,
+        "windDirectionUD": 0,
+        "windDirectionLR": 0,
+        "presetTemp": 22.5,
+        "entrust": true,
+        "coolHotJudge": true,
+        "modelNoRaw": 0,
+        "modelNo": 0,
+        "isVacantProperty": false,
+        "isSelfCleanOperation": false
+      },
+      "base64": "AADyj63/AAAAAAAQDwAAAAAAAf////+G7QAAUAct/wAAAAAAAAUAAAAAAAH/////+h0="
+    },
+    {
+      "state": {
+        "operation": true,
+        "operationMode": 3,
+        "airFlow": 4,
+        "windDirectionUD": 4,
+        "windDirectionLR": 7,
+        "presetTemp": 25.0,
+        "entrust": false,
+        "coolHotJudge": false,
+        "modelNoRaw": 2,
+        "modelNo": 2,
+        "isVacantProperty": false,
+        "isSelfCleanOperation": true
+      },
+      "base64": "AACvvrL/AAAIAAAWmgAAAAAAAf/////ebgIADTYy/wAACAAABpAAAAAAAAH/////tFQ="
+    },
+    {
+      "state": {
+        "operation": true,
+        "operationMode": 4,
+        "airFlow": 1,
+        "windDirectionUD": 3,
+        "windDirectionLR": 1,
+        "presetTemp": 18.0,
+        "entrust": false,
+        "coolHotJudge": true,
+        "modelNoRaw": 1,
+        "modelNo": 1,
+        "isVacantProperty": true,
+        "isSelfCleanOperation": false
+      },
+      "base64": "AACnqKT/AAAAAAEQigAAAAAAAf////8pnwEABSAk/wAAAAABAIAAAAAAAAH/////Xgo="
+    },
+    {
+      "state": {
+        "operation": true,
+        "operationMode": 2,
+        "airFlow": 0,
+        "windDirectionUD": 0,
+        "windDirectionLR": 0,
+        "presetTemp": 30.0,
+        "entrust": true,
+        "coolHotJudge": false,
+        "modelNoRaw": 3,
+        "modelNo": 2,
+        "isVacantProperty": true,
+        "isSelfCleanOperation": false
+      },
+      "base64": "AADzj7z/AAAIAAAQjwAAAAAAAf/////deAMAUQc8/wAACAAAAIUAAAAAAAH/////vCc="
+    },
+    {
+      "state": {
+        "operation": true,
+        "operationMode": 1,
+        "airFlow": 2,
+        "windDirectionUD": 1,
+        "windDirectionLR": 5,
+        "presetTemp": 21.0,
+        "entrust": false,
+        "coolHotJudge": true,
+        "modelNoRaw": 64,
+        "modelNo": -1,
+        "isVacantProperty": false,
+        "isSelfCleanOperation": false
+      },
+      "base64": "AACriar/AAAAAAAUCgAAAAAAAf/////SYUAACQEq/wAAAAAABAAAAAAAAAH/////dlA="
+    }
+  ]
+}

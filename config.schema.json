@@ -15,7 +15,7 @@
         "title": "Operator ID (optional)",
         "type": "string",
         "required": false,
-        "description": "Leave blank to let the plugin self-register a new remote on each device (uses one of the device's 4 remote slots). Provide an operator ID (e.g. sniffed from the Smart M-Air app) to mirror an existing remote instead — no registration is performed in that case. See https://github.com/JobDoesburg/homebridge-mhi-wfrac for more information."
+        "description": "Leave blank to let the plugin register itself as a remote on each device (it generates a UUID once and keeps it; this uses one of the device's 4 remote slots). Fill in the operator ID of your Smart M-Air app to mirror that remote instead; nothing is registered in that case. See https://github.com/JobDoesburg/homebridge-mhi-wfrac for more information."
       },
       "ignoreConnectionErrors": {
         "title": "Ignore Connection Errors",
@@ -23,6 +23,14 @@
         "required": false,
         "default": true,
         "description": "When enabled, connection errors will not be logged to reduce console spam when devices are offline."
+      },
+      "pollInterval": {
+        "title": "Poll Interval (seconds)",
+        "type": "integer",
+        "required": false,
+        "default": 60,
+        "minimum": 10,
+        "description": "How often the status of each device is read. The WF-RAC module is slow and handles one connection at a time; 60 seconds (like the Home Assistant integration) is the default, 10 is the minimum."
       },
       "devices": {
         "type": "array",
@@ -61,6 +69,13 @@
               "required": false,
               "default": false,
               "description": "Hide the dehumidifier accessory if your AC unit doesn't support dry mode."
+            },
+            "indoorTemperatureOffset": {
+              "title": "Indoor Temperature Offset (°C)",
+              "type": "number",
+              "required": false,
+              "default": 0,
+              "description": "Added to the room temperature shown in HomeKit. The sensor sits in the unit's return-air path and reads high while the unit is off; use e.g. -2 to correct that. It does not change what the unit regulates on."
             }
           }
         }
