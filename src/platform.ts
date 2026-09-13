@@ -31,9 +31,9 @@ export class HomebridgeMHIWFRACPlatform implements DynamicPlatformPlugin {
     this.api.on('didFinishLaunching', () => this.configureDevices());
   }
 
-  configureAccessory(accessory: PlatformAccessory<AccessoryContext>) {
+  configureAccessory(accessory: PlatformAccessory) {
     this.log.info('Loading accessory from cache:', accessory.displayName);
-    this.accessories.push(accessory);
+    this.accessories.push(accessory as PlatformAccessory<AccessoryContext>);
   }
 
   /**
