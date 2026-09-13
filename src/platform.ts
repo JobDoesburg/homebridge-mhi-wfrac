@@ -1,138 +1,139 @@
-import { API, DynamicPlatformPlugin, Logging, PlatformAccessory, PlatformConfig, Service, Characteristic } from 'homebridge';
-import { randomUUID } from 'crypto';
+import {API, Characteristic, DynamicPlatformPlugin, Logging, PlatformAccessory, PlatformConfig, Service} from 'homebridge';
+import {randomUUID} from 'crypto';
 
-import { PLATFORM_NAME, PLUGIN_NAME } from './settings.js';
-import { WFRACAccessory } from './platformAccessory.js';
-import { DeviceClient } from './device.js';
+import {PLATFORM_NAME, PLUGIN_NAME} from './settings.js';
+import {parsePlatformConfig, WFRACPlatformConfig} from './config.js';
+import {AccessoryContext, WFRACAccessory} from './platformAccessory.js';
+import {DeviceClient} from './deviceClient.js';
+
+const LEGACY_GENERATED_ID = /^homebridge-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 
 export class HomebridgeMHIWFRACPlatform implements DynamicPlatformPlugin {
-  public readonly Service: typeof Service;
-  public readonly Characteristic: typeof Characteristic;
+  readonly Service: typeof Service;
+  readonly Characteristic: typeof Characteristic;
+  readonly config: WFRACPlatformConfig;
 
-  public readonly accessories: PlatformAccessory[] = [];
+  readonly accessories: PlatformAccessory<AccessoryContext>[] = [];
 
   constructor(
-    public readonly log: Logging,
-    public readonly config: PlatformConfig,
-    public readonly api: API,
+    readonly log: Logging,
+    rawConfig: PlatformConfig,
+    readonly api: API,
   ) {
     this.Service = api.hap.Service;
     this.Characteristic = api.hap.Characteristic;
-
-    this.log.info('Finished initializing platform:', 'Homebridge MHI WFRAC');
+    this.config = parsePlatformConfig(rawConfig, log);
 
     if (!log.success) {
       log.success = log.info;
     }
 
-    this.api.on('didFinishLaunching', () => {
-      log.debug('Executed didFinishLaunching callback');
-      this.configureDevices();
-    });
-
-    this.api.on('shutdown', () => {
-      this.log.info('Homebridge is shutting down — leaving registrations in place.');
-    });
+    this.api.on('didFinishLaunching', () => this.configureDevices());
   }
 
-  configureAccessory(accessory: PlatformAccessory) {
+  configureAccessory(accessory: PlatformAccessory<AccessoryContext>) {
     this.log.info('Loading accessory from cache:', accessory.displayName);
     this.accessories.push(accessory);
   }
 
   /**
-   * The operator ID is shared across the whole installation, mirroring the Smart M-Air app behaviour.
-   * If the user provided one in config we use that ("mirror" mode — no register/deregister).
-   * Otherwise we generate one once and persist it on accessory contexts ("self-register" mode).
+   * One operator ID is shared by all devices, like one Smart M-Air app install. A configured ID is
+   * mirrored as-is (no registration). Otherwise a UUID is generated once and persisted on the
+   * accessories, and the plugin registers it on each device itself.
    */
-  resolveOperatorId(): { operatorId: string; selfManaged: boolean } {
-    const configured = (this.config.operatorId as string | undefined)?.trim();
-    if (configured && configured !== 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx') {
-      return { operatorId: configured, selfManaged: false };
+  resolveOperatorId(): {operatorId: string; selfManaged: boolean} {
+    if (this.config.operatorId) {
+      return {operatorId: this.config.operatorId, selfManaged: false};
     }
 
-    const fromCache = this.accessories
-      .map(a => a.context.generatedOperatorId as string | undefined)
-      .find(v => !!v);
-    if (fromCache) {
-      return { operatorId: fromCache, selfManaged: true };
+    for (const accessory of this.accessories) {
+      // Up to 2.5.x the registration was a bare flag; it always belonged to the generated ID.
+      if (accessory.context.registered && accessory.context.generatedOperatorId && !accessory.context.registration) {
+        accessory.context.registration = {operatorId: accessory.context.generatedOperatorId};
+      }
+      delete accessory.context.registered;
     }
 
-    const generated = `homebridge-${randomUUID()}`;
-    this.log.info(`No operatorId configured — generated a new one: ${generated}`);
-    return { operatorId: generated, selfManaged: true };
+    const registeredId = this.accessories.map(a => a.context.registration?.operatorId).find(id => !!id);
+    const cachedId = registeredId ?? this.accessories.map(a => a.context.generatedOperatorId).find(id => !!id);
+    if (cachedId) {
+      // 2.5.x generated `homebridge-<uuid>`; WF-RAC firmware rejects IDs longer than a UUID. Keep it only
+      // where it demonstrably worked, otherwise continue with the bare UUID so every device migrates alike.
+      const legacy = LEGACY_GENERATED_ID.exec(cachedId);
+      if (legacy && cachedId !== registeredId) {
+        this.log.info(`Replacing the unregistered operator ID ${cachedId} by ${legacy[1]}`);
+        return {operatorId: legacy[1], selfManaged: true};
+      }
+      return {operatorId: cachedId, selfManaged: true};
+    }
+
+    const generated = randomUUID();
+    this.log.info(`No operatorId configured; generated ${generated} and registering it on each device`);
+    return {operatorId: generated, selfManaged: true};
   }
 
   configureDevices() {
-
-    interface DeviceConfig {
-      mac: string;
-      deviceId?: string;
-      ip: string;
-      name: string;
-      hideDehumidifier?: boolean;
-    }
-
-    const deviceConfigs: DeviceConfig[] = this.config.devices ?? [];
-    if (deviceConfigs.length === 0) {
-      this.log.warn('No devices configured for HomebridgeMHIWFRACPlatform');
+    if (this.config.devices.length === 0) {
+      this.log.warn('No devices configured');
       return;
     }
 
-    const { operatorId, selfManaged } = this.resolveOperatorId();
+    const {operatorId, selfManaged} = this.resolveOperatorId();
     const configuredUuids = new Set<string>();
 
-    deviceConfigs.forEach((device) => {
+    for (const device of this.config.devices) {
       const uuid = this.api.hap.uuid.generate(device.mac);
       configuredUuids.add(uuid);
 
-      const existingAccessory = this.accessories.find(accessory => accessory.UUID === uuid);
-
-      if (existingAccessory) {
-        this.log.info('Restoring existing accessory from cache:', existingAccessory.displayName);
-        existingAccessory.context.device.mac = device.mac;
-        existingAccessory.context.device.deviceId = device.deviceId || device.mac;
-        existingAccessory.context.device.hideDehumidifier = device.hideDehumidifier || false;
-        existingAccessory.context.generatedOperatorId = selfManaged ? operatorId : undefined;
-        new WFRACAccessory(this, existingAccessory, device.ip, operatorId, selfManaged);
+      let accessory = this.accessories.find(a => a.UUID === uuid);
+      const isNew = !accessory;
+      if (accessory) {
+        this.log.info('Restoring existing accessory from cache:', accessory.displayName);
       } else {
         this.log.info('Adding new accessory:', device.name);
-        const accessory = new this.api.platformAccessory(device.name, uuid);
-
-        accessory.context.device = {
-          name: device.name,
-          mac: device.mac,
-          deviceId: device.deviceId || device.mac,
-          uniqueId: uuid,
-          hideDehumidifier: device.hideDehumidifier || false,
-        };
-        accessory.context.generatedOperatorId = selfManaged ? operatorId : undefined;
-
-        new WFRACAccessory(this, accessory, device.ip, operatorId, selfManaged);
-
-        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+        accessory = new this.api.platformAccessory<AccessoryContext>(device.name, uuid);
       }
-    });
 
-    // Devices that were previously cached but are no longer in config: deregister & remove.
+      accessory.context.device = {
+        ...accessory.context.device, name: device.name, mac: device.mac, ip: device.ip, deviceId: device.deviceId,
+      };
+      accessory.context.generatedOperatorId = selfManaged ? operatorId : undefined;
+      if (!selfManaged) {
+        delete accessory.context.registration;
+      }
+
+      new WFRACAccessory(this, accessory, device, operatorId, selfManaged);
+
+      if (isNew) {
+        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+      } else {
+        this.api.updatePlatformAccessories([accessory]);
+      }
+    }
+
     const stale = this.accessories.filter(a => !configuredUuids.has(a.UUID));
     if (stale.length > 0) {
-      this.cleanupRemovedAccessories(stale);
+      void this.cleanupRemovedAccessories(stale);
     }
   }
 
-  private async cleanupRemovedAccessories(stale: PlatformAccessory[]) {
+  /** Devices that were cached but are no longer configured: free their remote slot, then remove them. */
+  async cleanupRemovedAccessories(stale: PlatformAccessory<AccessoryContext>[]) {
     for (const accessory of stale) {
       this.log.info('Removing accessory no longer in config:', accessory.displayName);
-      const operatorId = accessory.context.generatedOperatorId as string | undefined;
-      const ip = accessory.context.device?.ip as string | undefined;
-      const mac = accessory.context.device?.mac as string | undefined;
-      const deviceId = (accessory.context.device?.deviceId as string | undefined) || mac;
-      if (operatorId && accessory.context.registered && ip && mac && deviceId) {
+      const {device, registration} = accessory.context;
+      if (registration && device?.ip && device.mac) {
+        const client = new DeviceClient({
+          ip: device.ip,
+          operatorId: registration.operatorId,
+          deviceId: device.deviceId || device.mac,
+          airconId: device.airconId || device.mac,
+          protocol: device.protocol,
+          log: this.log,
+        });
         try {
-          const client = new DeviceClient(ip, 51443, operatorId, deviceId, mac, this.log, true);
-          this.log.info(`Deregistering ${accessory.displayName} (account ${operatorId})`);
-          await client.deleteAccountInfo();
+          this.log.info(`Deregistering ${accessory.displayName} (operator ID ${registration.operatorId})`);
+          await client.deregister();
         } catch (error) {
           this.log.warn(`Could not deregister ${accessory.displayName}: ${(error as Error).message}`);
         }

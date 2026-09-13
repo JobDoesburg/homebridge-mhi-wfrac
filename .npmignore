@@ -1,5 +1,6 @@
-# Ignore source code
+# Ignore source code and tests
 src
+test
 
 # ------------- Defaults ------------- #
 

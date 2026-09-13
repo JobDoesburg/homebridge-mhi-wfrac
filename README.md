@@ -20,30 +20,42 @@ This plugin exposes three services to HomeKit as one device: a thermostat servic
    npm install -g homebridge-mhi-wfrac
    ```
 
-2. **Update Homebridge Configuration**: Update your Homebridge `config.json` file with the platform configuration, setting the Operator ID that corresponds to your Smart M-Air app, and configuring all the devices you want to configure (name, mac and ip).
+2. **Update Homebridge Configuration**: Add the platform and configure your devices (name, MAC and IP). Leave `operatorId` out (or blank) to let the plugin register itself on each device.
    ```json
      {
          "platforms": [
             {
                 "platform": "HomebridgeMHIWFRACPlatform",
-                "operatorId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+                "pollInterval": 60,
                 "devices": [
                    {
                        "name": "Living Room",
-                       "mac": "00:00:00:00:00:00",
-                       "ip": ""
+                       "mac": "000000000000",
+                       "ip": "192.168.1.100",
+                       "indoorTemperatureOffset": 0
                    }
                 ]
             }
          ]
      }
-   ```      
+   ```
+
+   | Option | Default | Meaning |
+   | --- | --- | --- |
+   | `operatorId` | *(none)* | Mirror an existing Smart M-Air remote instead of self-registering, see below. |
+   | `pollInterval` | `60` | Seconds between status reads (minimum 10), the same as the Home Assistant integration. The module is slow and handles one connection at a time. |
+   | `ignoreConnectionErrors` | `true` | Log connection errors at debug level only. Becoming unreachable and reachable again is always logged once. |
+   | `devices[].mac` | | MAC address without separators, e.g. `1234567890ab`. |
+   | `devices[].ip` | | IP address; use a DHCP reservation. |
+   | `devices[].deviceId` | the MAC | Client identifier sent with every request. |
+   | `devices[].hideDehumidifier` | `false` | Do not expose the dehumidifier service. |
+   | `devices[].indoorTemperatureOffset` | `0` | Added to the room temperature shown in HomeKit (°C), see below. |
 
 ### Operator ID
 
 The Operator ID identifies a remote control to the air conditioner. The device allows up to four registered remotes. There are two ways to set this up:
 
-**Self-register (recommended, no config required).** Leave the `operatorId` field blank. The plugin will generate its own ID, register itself as a new remote on each device on first contact (via `updateAccountInfo`), and persist the ID across restarts. When you remove a device from the plugin's config, the plugin deregisters itself (via `deleteAccountInfo`) so the device's remote slot is freed.
+**Self-register (recommended, no config required).** Leave `operatorId` out. The plugin generates a UUID once, registers it as a new remote on each device on first contact (`updateAccountInfo`) and keeps it across restarts. When you remove a device from the config, the plugin deregisters itself (`deleteAccountInfo`) so the remote slot is freed. Versions 2.5.x generated a longer `homebridge-…` ID that the `WF-RAC-HTTPS` firmware rejects; such an ID is replaced by a plain UUID automatically on upgrade, unless it had been accepted by your device.
 
 **Mirror an existing remote.** If you'd rather reuse the operator ID of your Smart M-Air app (so the plugin doesn't take its own remote slot), set `operatorId` in the config to that value. In this mode the plugin will not register or deregister anything — it simply impersonates the Smart M-Air app.
 
@@ -75,19 +87,26 @@ For setting the status of the air conditioner, you will need to use the Operator
 - **Humidity**: We do not have humidity sensors in the air conditioner, so the humidity is not reported, resulting in a Homekit value of 0%.
 - **Outdoor temperature**: We do not (yet) report the outdoor temperature, though we could provide a separate accessory for it.
 
+## Room temperature
+
+The temperature sensor sits in the unit's return-air path. While the unit is off it drifts towards the casing temperature and typically reads one to three degrees high. Set `indoorTemperatureOffset` (for example `-2`) to correct what HomeKit shows; it does not change the reading the unit itself regulates on. HomeKit's Thermostat service always shows a current temperature, so it cannot be hidden.
+
 ## Connection Reliability
 
-The plugin includes automatic retry logic with exponential backoff to handle transient network issues:
-- **Automatic retries**: Up to 3 attempts for failed requests (1s → 2s → 4s delays)
-- **Supported errors**: Connection timeouts, socket hang ups, connection refused, and other network errors
-- **Status polling**: Automatically skips during active commands to prevent conflicts
+The WF-RAC module is a slow embedded device that handles one connection at a time, so the plugin:
+- sends at most one request per second per device, with a 20 second timeout, and polls every `pollInterval` seconds (60 by default);
+- merges HomeKit changes made within a moment of each other (e.g. mode and temperature) into a single command;
+- logs once when a device stops answering and once when it is back, instead of logging every failed poll. The module reconnects to Wi-Fi about once an hour and is unreachable for a short while when it does; that is normal.
 
-If you experience persistent connection errors (ECONNREFUSED, socket hang up, etc.), check the following:
-- Verify the air conditioner IP address is correct and reachable
-- Ensure you configured static IP addresses via DHCP reservation in your router
-- Check that port 51443 is not blocked by a firewall
-- Verify the device is powered on and connected to WiFi
-- Try restarting the air conditioner's WiFi module
+If a device stays unreachable, check that the IP address is right and reserved in your router, that port 51443 is not blocked, and that the module is connected to Wi-Fi (the Smart M-Air app can reach it).
+
+## Commands refused by the device
+
+Every `setAirconStat` response carries a `result`. The plugin understands the ones that matter:
+- **`result: 2`** — the operator ID is not registered on the device. In self-register mode the plugin registers again and retries; with a configured `operatorId` it logs which remotes the device does list. If the device already has four remotes, registration fails: remove an unused remote in the Smart M-Air app or mirror an existing one.
+- **`result: 1`, `11`, `12`** — the device refused the command. Usually another controller (the Smart M-Air app on a phone) sent a command within the last 60 seconds and holds the device's exclusive write access for that long. The plugin waits until that lock lapses and retries once.
+
+On start-up the plugin logs the firmware type and versions of each device (`WF-RAC`, `WF-RAC-HTTPS` or `WCBN4612L` plus the wireless and MCU version) and its model number; please include that line in bug reports.
 
 ## Limitations
 
@@ -106,4 +125,4 @@ This project is licensed under the Apache-2.0 License. See the [LICENSE](LICENSE
 
 ## Acknowledgements
 
-This plugin was developed taking inspiration from the https://github.com/edwinvdpol/com.mhi.wfrac Homey app by Edwin van de Pol.
+This plugin was developed taking inspiration from the https://github.com/edwinvdpol/com.mhi.wfrac Homey app by Edwin van de Pol. The protocol details (frame layout, result codes, the 60 second write lock) follow the [Home Assistant integration](https://github.com/jeatheak/Mitsubishi-WF-RAC-Integration) and its [module reference](https://github.com/jeatheak/Mitsubishi-WF-RAC-Integration/blob/main/docs/wf-rac-module-reference.md); the encoder is tested against its `pywfrac` library.
