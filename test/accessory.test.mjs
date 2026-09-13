@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {HomebridgeAPI} from 'homebridge/lib/api.js';
+import {HomebridgeAPI} from '../node_modules/homebridge/dist/api.js';
 
 import {HomebridgeMHIWFRACPlatform} from '../dist/platform.js';
 import {WFRACAccessory} from '../dist/platformAccessory.js';
